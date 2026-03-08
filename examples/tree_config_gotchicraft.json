@@ -1,0 +1,10 @@
+{
+  "single": 33,
+  "single_alts": [25, 29, 32, 34, 35],
+  "single_alt_chance": 0.15,
+  "vertical_2_top": 19,
+  "vertical_2_bottom": 26,
+  "vertical_3_top": 13,
+  "vertical_3_mid": 20,
+  "vertical_3_bottom": 27
+}

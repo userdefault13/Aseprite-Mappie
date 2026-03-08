@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tilemap-generator"
+version = "0.1.0"
+description = "Generate CSV and Tiled JSON tilemaps from ASCII layouts."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Aseprite-Mappie" }]
+license = { text = "MIT" }
+dependencies = [
+    "Pillow>=9.0",
+]
+
+[project.scripts]
+tilemap-gen = "tilemap_generator.cli:main"
+tilemap-mapgen = "tilemap_generator.map_gen_cli:main"
+tilemap-aseprite = "tilemap_generator.aseprite_cli:main"
+tilemap-app = "tilemap_generator.app:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
