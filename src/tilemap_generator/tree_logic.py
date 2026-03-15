@@ -70,12 +70,15 @@ def resolve_tree_tile(
     config: dict[str, Any],
     rng: random.Random,
     fallback: int,
+    *,
+    strict: bool = False,
 ) -> int:
-    """Resolve tile ID for a tree cell. Uses vertical_runs if in run, else single logic."""
+    """Resolve tile ID for a tree cell. Uses vertical_runs if in run, else single logic.
+    strict: when True, single trees always use config['single'] (no random alts)."""
     if (row, col) in vertical_runs:
         return vertical_runs[(row, col)]
     # Single tree
-    if rng.random() < config.get("single_alt_chance", 0.15):
+    if not strict and rng.random() < config.get("single_alt_chance", 0.15):
         alts = config.get("single_alts", [25, 29, 32, 34, 35])
         if alts:
             return rng.choice(alts)
@@ -88,6 +91,8 @@ def to_tile_rows_with_trees(
     tree_chars: set[str] | None = None,
     tree_config: dict[str, Any] | None = None,
     seed: int = 42,
+    *,
+    strict: bool = False,
 ) -> list[list[int]]:
     """Convert ASCII to tile rows, with contextual tree tile resolution."""
     if tree_chars is None:
@@ -119,6 +124,7 @@ def to_tile_rows_with_trees(
                     config=tree_config,
                     rng=rng,
                     fallback=legend[char],
+                    strict=strict,
                 )
                 row.append(tile_id)
             else:

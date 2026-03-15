@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -18,6 +19,7 @@ SOLID_TILE_COLORS: dict[str, tuple[int, int, int, int]] = {
     "G": (104, 178, 76, 255),
     ".": (104, 178, 76, 255),
     "~": (72, 132, 224, 255),
+    "`": (48, 96, 180, 255),  # Deep water
     "T": (46, 108, 54, 255),
     "F": (30, 78, 40, 255),
     "P": (181, 152, 102, 255),
@@ -124,21 +126,12 @@ def command_init(args: argparse.Namespace) -> None:
 
 
 def _default_legend() -> dict[str, int]:
-    return {
-        "G": 1,
-        ".": 1,
-        "~": 2,
-        "T": 3,
-        "F": 4,
-        "P": 5,
-        "S": 6,
-        "J": 7,
-        "M": 8,
-        "H": 9,
-        "C": 10,
-        "D": 11,
-        "N": 12,
-    }
+    from tilemap_generator.legend import DEFAULT_LEGEND
+    return DEFAULT_LEGEND.copy()
+
+
+# Chars that use grass tiles (interior or shoreline); B = always shoreline
+GRASS_LIKE_CHARS = frozenset("G.B")
 
 
 def command_paint(args: argparse.Namespace) -> None:
@@ -158,7 +151,36 @@ def command_paint(args: argparse.Namespace) -> None:
     if not lines:
         raise ValueError("ASCII map is empty")
 
-    treeset_path = Path(args.treeset) if args.treeset else None
+    from tilemap_generator.paint_map_png import load_terrain_config
+
+    terrain_cfg: dict | None = None
+    terrain_config_input = getattr(args, "terrain_config", "") or ""
+    if terrain_config_input:
+        tc_path = Path(terrain_config_input)
+        if not tc_path.exists():
+            for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                candidate = base / tc_path
+                if candidate.exists():
+                    tc_path = candidate
+                    break
+        if tc_path.exists():
+            terrain_cfg = load_terrain_config(tc_path, project_root=PROJECT_ROOT)
+    else:
+        # Auto-use terrain config when not provided
+        for candidate in (
+            PROJECT_ROOT / "examples" / "terrain.bitmask.json",
+            PROJECT_ROOT / "terrain.bitmask.json",
+        ):
+            if candidate.exists():
+                terrain_cfg = load_terrain_config(candidate, project_root=PROJECT_ROOT)
+                break
+
+    treeset_input = (terrain_cfg and terrain_cfg.get("trees_path")) or args.treeset
+    treeset_path = Path(treeset_input) if treeset_input else None
+    if treeset_path is None:
+        default_treeset = PROJECT_ROOT / "examples" / "trees.aseprite"
+        if default_treeset.exists():
+            treeset_path = default_treeset
 
     if treeset_path:
         # GotchiCraft-style: Python/PIL composites PNGs, Lua loads them
@@ -174,9 +196,11 @@ def command_paint(args: argparse.Namespace) -> None:
                     f"(tried cwd, examples/, project root)"
                 )
         legend_path = Path(args.legend) if args.legend else ascii_path.with_suffix(".legend.json")
-        legend = load_legend(legend_path) if legend_path.exists() else _default_legend()
+        file_legend = load_legend(legend_path) if legend_path.exists() else None
+        from tilemap_generator.legend import resolve_legend
+        legend = resolve_legend(terrain_cfg, file_legend)
         tile_rows = to_tile_rows_with_trees(
-            lines, legend, tree_chars={"T", "F"}, seed=args.tree_seed
+            lines, legend, tree_chars={"T", "F"}, seed=args.tree_seed, strict=getattr(args, "strict", False)
         )
 
         from tilemap_generator.paint_map_png import (
@@ -187,8 +211,13 @@ def command_paint(args: argparse.Namespace) -> None:
         grass_dir: Path | None = None
         grass_sheet_path: Path | None = None
         grass_path_resolved: Path | None = None
-        if args.grass_dir:
-            grass_path = Path(args.grass_dir)
+        grass_input = (
+            (terrain_cfg and terrain_cfg.get("grass_path"))
+            or args.grass_dir
+            or "examples/grass.aseprite"
+        )
+        if grass_input:
+            grass_path = Path(grass_input)
             if not grass_path.exists():
                 for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
                     candidate = base / grass_path
@@ -200,10 +229,45 @@ def command_paint(args: argparse.Namespace) -> None:
             if grass_path and grass_path.exists():
                 grass_path_resolved = grass_path
 
+        shoreline_path_resolved: Path | None = None
+        shoreline_input = terrain_cfg.get("shoreline_path") if terrain_cfg else ""
+        if shoreline_input:
+            sp = Path(shoreline_input)
+            if not sp.exists():
+                for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                    candidate = base / sp
+                    if candidate.exists():
+                        sp = candidate
+                        break
+                else:
+                    sp = None
+            if sp and sp.exists():
+                shoreline_path_resolved = sp
+
+        lakesrivers_path_resolved: Path | None = None
+        lakesrivers_input = terrain_cfg.get("lakesrivers_path") if terrain_cfg else ""
+        if lakesrivers_input:
+            lrp = Path(lakesrivers_input)
+            if not lrp.exists():
+                for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                    candidate = base / lrp
+                    if candidate.exists():
+                        lrp = candidate
+                        break
+                else:
+                    lrp = None
+            if lrp and lrp.exists():
+                lakesrivers_path_resolved = lrp
+
         water_path: Path | None = None
         water_aseprite_path: Path | None = None
-        if args.water_tile:
-            wp = Path(args.water_tile)
+        water_input = (
+            (terrain_cfg and terrain_cfg.get("water_path"))
+            or args.water_tile
+            or "examples/water.aseprite"
+        )
+        if water_input:
+            wp = Path(water_input)
             if not wp.exists():
                 for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
                     candidate = base / wp
@@ -220,7 +284,11 @@ def command_paint(args: argparse.Namespace) -> None:
 
         dirt_path: Path | None = None
         dirt_aseprite_path: Path | None = None
-        dirt_input = args.dirt_tile or "examples/dirt.aseprite"
+        dirt_input = (
+            (terrain_cfg and terrain_cfg.get("dirt_path"))
+            or args.dirt_tile
+            or "examples/dirt.aseprite"
+        )
         if dirt_input:
             dp = Path(dirt_input)
             if not dp.exists():
@@ -237,25 +305,129 @@ def command_paint(args: argparse.Namespace) -> None:
                 else:
                     dirt_path = dp
 
+        hill_path: Path | None = None
+        hill_aseprite_path: Path | None = None
+        hill_input = (terrain_cfg and terrain_cfg.get("hill_path")) or "examples/hills.aseprite"
+        if hill_input:
+            hp = Path(hill_input)
+            if not hp.exists():
+                for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                    candidate = base / hp
+                    if candidate.exists():
+                        hp = candidate
+                        break
+                else:
+                    hp = None
+            if hp and hp.exists():
+                if hp.suffix.lower() in (".aseprite", ".ase"):
+                    hill_aseprite_path = hp
+                else:
+                    hill_path = hp
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             trees_sheet = tmp_path / "trees_sheet.png"
             water_png = tmp_path / "water.png"
+            water_shallow_png = tmp_path / "water_shallow.png"
+            water_deep_png = tmp_path / "water_deep.png"
+            water_lake_png = tmp_path / "water_lake.png"
+            water_river_png = tmp_path / "water_river.png"
             grass_png = tmp_path / "grass.png"
             dirt_png = tmp_path / "dirt.png"
             trees_png = tmp_path / "trees.png"
+            poi_png = tmp_path / "poi.png"
+            poi_layers_png = {
+                "Spawn": tmp_path / "poi_spawn.png",
+                "Join": tmp_path / "poi_join.png",
+                "Mine": tmp_path / "poi_mine.png",
+                "Shop": tmp_path / "poi_shop.png",
+                "Creep": tmp_path / "poi_creep.png",
+                "DeadEnd": tmp_path / "poi_dead_end.png",
+                "Secret": tmp_path / "poi_secret.png",
+            }
+
+            # Shoreline (ocean) and LakeBank (lake/river) layers (persistent, next to output)
+            shoreline_out = out_path.parent / (out_path.stem + "_shoreline.png")
+            lakebank_out = out_path.parent / (out_path.stem + "_lakebank.png")
+            hill_png = tmp_path / "hill.png"
 
             # Resolve grass_dir vs grass_sheet_path
+            grass_json_path: Path | None = None
             if grass_path_resolved:
                 if grass_path_resolved.is_dir():
                     grass_dir = grass_path_resolved
                 elif grass_path_resolved.suffix.lower() in (".aseprite", ".ase"):
-                    grass_sheet_path = tmp_path / "grass_sheet.png"
-                    export_treeset_to_png(
-                        grass_path_resolved, grass_sheet_path, aseprite_bin
+                    grass_json_candidate = grass_path_resolved.parent / (
+                        grass_path_resolved.stem + ".json"
                     )
+                    # Prefer pre-exported grass.png when it exists (full tileset with shoreline 98-118)
+                    grass_png_candidate = grass_path_resolved.parent / (
+                        grass_path_resolved.stem + ".png"
+                    )
+                    if grass_png_candidate.exists():
+                        grass_sheet_path = grass_png_candidate
+                        grass_json_path = (
+                            grass_json_candidate
+                            if grass_json_candidate.exists()
+                            else None
+                        )
+                    else:
+                        grass_sheet_path = tmp_path / "grass_sheet.png"
+                        export_treeset_to_png(
+                            grass_path_resolved,
+                            grass_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=11,
+                            out_json=tmp_path / "grass_sheet.json",
+                        )
+                        grass_json_path = (
+                            grass_json_candidate
+                            if grass_json_candidate.exists()
+                            else tmp_path / "grass_sheet.json"
+                        )
                 elif grass_path_resolved.suffix.lower() == ".png":
                     grass_sheet_path = grass_path_resolved
+
+            # Resolve shoreline sheet (shorelines.aseprite for continent shoreline tiles)
+            shoreline_sheet_path: Path | None = None
+            if shoreline_path_resolved:
+                if shoreline_path_resolved.suffix.lower() in (".aseprite", ".ase"):
+                    shoreline_png_candidate = shoreline_path_resolved.parent / (
+                        shoreline_path_resolved.stem + ".png"
+                    )
+                    if shoreline_png_candidate.exists():
+                        shoreline_sheet_path = shoreline_png_candidate
+                    else:
+                        shoreline_sheet_path = tmp_path / "shorelines_sheet.png"
+                        # Use 5 columns to match common shoreline autotile layout (e.g. 5x7 = 35 tiles)
+                        export_treeset_to_png(
+                            shoreline_path_resolved,
+                            shoreline_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=5,
+                        )
+                elif shoreline_path_resolved.suffix.lower() == ".png":
+                    shoreline_sheet_path = shoreline_path_resolved
+
+            # Resolve lakes/rivers sheet (lakesrivers.aseprite for lake and river bank tiles)
+            lakesrivers_sheet_path: Path | None = None
+            if lakesrivers_path_resolved:
+                if lakesrivers_path_resolved.suffix.lower() in (".aseprite", ".ase"):
+                    lr_png_candidate = lakesrivers_path_resolved.parent / (
+                        lakesrivers_path_resolved.stem + ".png"
+                    )
+                    if lr_png_candidate.exists():
+                        lakesrivers_sheet_path = lr_png_candidate
+                    else:
+                        lakesrivers_sheet_path = tmp_path / "lakesrivers_sheet.png"
+                        export_treeset_to_png(
+                            lakesrivers_path_resolved,
+                            lakesrivers_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=11,
+                        )
+                elif lakesrivers_path_resolved.suffix.lower() == ".png":
+                    lakesrivers_sheet_path = lakesrivers_path_resolved
 
             # Auto-find Water.png near grass path (GotchiCraft layout)
             if water_path is None and water_aseprite_path is None and grass_path_resolved is not None:
@@ -268,35 +440,23 @@ def command_paint(args: argparse.Namespace) -> None:
                         water_path = candidate
                         break
 
-            # Export water .aseprite to PNG (first frame for animations)
+            # Export water .aseprite to PNG sheet (supports shallow + deep tiles)
             if water_aseprite_path is not None:
                 water_sheet = tmp_path / "water_sheet.png"
                 export_treeset_to_png(water_aseprite_path, water_sheet, aseprite_bin)
-                # Extract first frame from sheet (handles single frame or horizontal strip)
-                try:
-                    from PIL import Image
-                    img = Image.open(water_sheet)
-                    if img.mode != "RGBA":
-                        img = img.convert("RGBA")
-                    w, h = img.size
-                    # First frame: square (h x h) for horizontal strip, or full if single
-                    frame_size = min(w, h)
-                    frame = img.crop((0, 0, frame_size, frame_size))
-                    if frame_size != tile_size:
-                        frame = frame.resize(
-                            (tile_size, tile_size), Image.Resampling.NEAREST
-                        )
-                    water_tile_path = tmp_path / "water_tile.png"
-                    frame.save(water_tile_path)
-                    water_path = water_tile_path
-                except Exception:
-                    water_path = water_sheet  # fallback to full sheet
+                water_path = water_sheet  # Full sheet: load_water_tiles handles 1 or 2+ tiles
 
             # Export dirt .aseprite to PNG (full sheet for path autotiling)
             if dirt_aseprite_path is not None:
                 dirt_sheet = tmp_path / "dirt_sheet.png"
                 export_treeset_to_png(dirt_aseprite_path, dirt_sheet, aseprite_bin)
                 dirt_path = dirt_sheet
+
+            # Export hills .aseprite to PNG (dedicated hill tileset)
+            if hill_aseprite_path is not None:
+                hill_sheet = tmp_path / "hill_sheet.png"
+                export_treeset_to_png(hill_aseprite_path, hill_sheet, aseprite_bin)
+                hill_path = hill_sheet
 
             # Parse grass tile range (e.g. "19-30")
             grass_tile_range: tuple[int, int] | None = (19, 30)
@@ -308,6 +468,46 @@ def command_paint(args: argparse.Namespace) -> None:
                     except ValueError:
                         pass
 
+            # Parse grass shoreline range (e.g. "1-15")
+            grass_shoreline_range: tuple[int, int] | None = (1, 56)
+            if args.grass_shoreline_range:
+                parts = args.grass_shoreline_range.split("-")
+                if len(parts) == 2:
+                    try:
+                        grass_shoreline_range = (int(parts[0]), int(parts[1]))
+                    except ValueError:
+                        pass
+
+            # Parse extended shoreline range (e.g. "19-23") for peninsula/island
+            grass_shoreline_extended_range: tuple[int, int] | None = None
+            if getattr(args, "grass_shoreline_extended_range", ""):
+                parts = args.grass_shoreline_extended_range.split("-")
+                if len(parts) == 2:
+                    try:
+                        grass_shoreline_extended_range = (int(parts[0]), int(parts[1]))
+                    except ValueError:
+                        pass
+
+            # Parse river bank range (e.g. "24-25") for masks 5, 10
+            grass_shoreline_river_range: tuple[int, int] | None = None
+            if getattr(args, "grass_shoreline_river_range", ""):
+                parts = args.grass_shoreline_river_range.split("-")
+                if len(parts) == 2:
+                    try:
+                        grass_shoreline_river_range = (int(parts[0]), int(parts[1]))
+                    except ValueError:
+                        pass
+
+            water_border_width = args.water_border_width or 2
+
+            grass_bitmask_config = None
+            if terrain_cfg:
+                grass_bitmask_config = terrain_cfg
+            elif getattr(args, "grass_bitmask", "") and Path(args.grass_bitmask).exists():
+                from tilemap_generator.paint_map_png import load_bitmask_config
+
+                grass_bitmask_config = load_bitmask_config(Path(args.grass_bitmask))
+
             export_treeset_to_png(treeset_path, trees_sheet, aseprite_bin)
             paint_map_to_png(
                 ascii_lines=lines,
@@ -316,15 +516,36 @@ def command_paint(args: argparse.Namespace) -> None:
                 tile_size=tile_size,
                 trees_sheet_path=trees_sheet,
                 water_out=water_png,
+                water_shallow_out=water_shallow_png,
+                water_deep_out=water_deep_png,
+                water_lake_out=water_lake_png,
+                water_river_out=water_river_png,
                 grass_out=grass_png,
                 dirt_out=dirt_png,
                 trees_out=trees_png,
+                poi_out=poi_png,
+                poi_layers_out=poi_layers_png,
+                shoreline_out=shoreline_out,
+                lakebank_out=lakebank_out,
+                hill_out=hill_png,
                 grass_dir=grass_dir,
                 grass_sheet_path=grass_sheet_path,
                 grass_tile_range=grass_tile_range,
+                grass_shoreline_range=grass_shoreline_range,
+                grass_shoreline_lake_range=(4, 18),
+                grass_shoreline_extended_range=grass_shoreline_extended_range,
+                grass_shoreline_river_range=grass_shoreline_river_range,
+                grass_bitmask_config=grass_bitmask_config,
+                grass_json_path=grass_json_path,
+                shoreline_sheet_path=shoreline_sheet_path,
+                lakesrivers_sheet_path=lakesrivers_sheet_path,
                 water_path=water_path,
                 dirt_path=dirt_path,
+                hill_path=hill_path,
+                water_border_width=water_border_width,
+                ascii_water_border=2,
                 seed=args.tree_seed,
+                strict=getattr(args, "strict", False),
             )
 
             lua_script = PROJECT_ROOT / "assets/lua/paint_from_png.lua"
@@ -333,9 +554,24 @@ def command_paint(args: argparse.Namespace) -> None:
             env = os.environ.copy()
             env["OUT"] = str(out_path.resolve())
             env["WATER_PNG"] = str(water_png)
+            env["WATER_SHALLOW_PNG"] = str(water_shallow_png)
+            env["WATER_DEEP_PNG"] = str(water_deep_png)
+            env["WATER_LAKE_PNG"] = str(water_lake_png)
+            env["WATER_RIVER_PNG"] = str(water_river_png)
             env["GRASS_PNG"] = str(grass_png)
+            env["SHORELINE_PNG"] = str(shoreline_out.resolve())
+            env["LAKEBANK_PNG"] = str(lakebank_out.resolve())
+            env["HILL_PNG"] = str(hill_png)
             env["DIRT_PNG"] = str(dirt_png)
             env["TREES_PNG"] = str(trees_png)
+            env["POI_PNG"] = str(poi_png)
+            env["POI_SPAWN_PNG"] = str(poi_layers_png["Spawn"])
+            env["POI_JOIN_PNG"] = str(poi_layers_png["Join"])
+            env["POI_MINE_PNG"] = str(poi_layers_png["Mine"])
+            env["POI_SHOP_PNG"] = str(poi_layers_png["Shop"])
+            env["POI_CREEP_PNG"] = str(poi_layers_png["Creep"])
+            env["POI_DEAD_END_PNG"] = str(poi_layers_png["DeadEnd"])
+            env["POI_SECRET_PNG"] = str(poi_layers_png["Secret"])
             run([str(aseprite_bin), "-b", "--script", str(lua_script)], env=env)
     else:
         # No treeset: Lua paints solid colors only
@@ -350,8 +586,62 @@ def command_paint(args: argparse.Namespace) -> None:
         run([str(aseprite_bin), "-b", "--script", str(lua_script)], env=env)
 
     print(f"Painted {ascii_path} -> {out_path}")
+    if treeset_path:
+        stem = out_path.stem
+        if (out_path.parent / (stem + "_shoreline.png")).exists():
+            print(f"  Shoreline (ocean): {stem}_shoreline.png")
+        if (out_path.parent / (stem + "_lakebank.png")).exists():
+            print(f"  LakeBank (lake/river): {stem}_lakebank.png")
+
+    # Auto-generate JSON and CSV tile indices when --export-map (default)
+    if getattr(args, "export_map", True):
+        legend_path = Path(args.legend) if args.legend else ascii_path.with_suffix(".legend.json")
+        if legend_path.exists():
+            from tilemap_generator import cli as map_cli
+
+            out_prefix = out_path.with_suffix("")
+            map_args = argparse.Namespace(
+                ascii_path=str(ascii_path),
+                legend_path=str(legend_path),
+                tile_width=tile_size,
+                tile_height=tile_size,
+                out_prefix=str(out_prefix),
+                layer_name="Ground",
+                tileset_source="",
+                aseprite_data="",
+                tree_logic=bool(treeset_path),
+                tree_config=args.tree_config if getattr(args, "tree_config", None) else "",
+                tree_seed=args.tree_seed,
+            )
+            try:
+                map_cli.run_from_args(map_args)
+            except Exception as e:
+                print(f"Warning: Could not export map JSON/CSV: {e}", file=sys.stderr)
+
     if args.open:
-        run([str(aseprite_bin), str(out_path)])
+        # Launch Aseprite in background so "All Done!" prompt appears immediately
+        try:
+            subprocess.Popen(
+                [str(aseprite_bin), str(out_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            print(f"Note: Could not open in Aseprite: {e}", file=sys.stderr)
+
+    print("\nAll Done!", flush=True)
+    if sys.stdin.isatty():
+        print("1. Back to main menu")
+        print("2. Exit")
+        choice = input("Select [1-2]: ").strip() or "1"
+        if choice == "1":
+            from tilemap_generator import app
+
+            app.run_menu()
+        else:
+            print("Exiting.")
 
 
 def command_edit(args: argparse.Namespace) -> None:
@@ -519,7 +809,15 @@ def build_parser() -> argparse.ArgumentParser:
     paint_parser.add_argument(
         "--open",
         action="store_true",
-        help="Open the painted .aseprite file in Aseprite after creation.",
+        default=True,
+        dest="open",
+        help="Open the painted .aseprite file in Aseprite after creation (default).",
+    )
+    paint_parser.add_argument(
+        "--no-open",
+        action="store_false",
+        dest="open",
+        help="Do not open the painted file in Aseprite.",
     )
     paint_parser.add_argument(
         "--treeset",
@@ -556,6 +854,54 @@ def build_parser() -> argparse.ArgumentParser:
         "--grass-tile-range",
         default="19-30",
         help="For grass sheet: tile range to use (1-based inclusive). Default: 19-30.",
+    )
+    paint_parser.add_argument(
+        "--water-border-width",
+        type=int,
+        default=2,
+        help="Tiles of water border around map (default 2).",
+    )
+    paint_parser.add_argument(
+        "--grass-shoreline-range",
+        default="1-56",
+        help="Grass shoreline tile range (e.g. 1-56 for examples/grass.png). Default: 1-56.",
+    )
+    paint_parser.add_argument(
+        "--grass-shoreline-extended-range",
+        default="",
+        help="Extended shoreline tiles for peninsula/island (5 tiles, e.g. 19-23). Optional.",
+    )
+    paint_parser.add_argument(
+        "--grass-shoreline-river-range",
+        default="",
+        help="River bank tiles for water on opposite sides (2 tiles: N+S, E+W). Optional.",
+    )
+    paint_parser.add_argument(
+        "--grass-bitmask",
+        default="",
+        help="Path to grass bitmask JSON (shoreline mappings). Overrides --grass-shoreline-* when set.",
+    )
+    paint_parser.add_argument(
+        "--terrain-config",
+        default="",
+        help="Path to terrain config JSON. Auto-uses examples/terrain.bitmask.json when omitted. Centralizes grass, water, dirt paths and bitmask.",
+    )
+    paint_parser.add_argument(
+        "--export-map",
+        action="store_true",
+        default=True,
+        help="Auto-generate JSON and CSV tile indices after painting (default: on).",
+    )
+    paint_parser.add_argument(
+        "--no-export-map",
+        action="store_false",
+        dest="export_map",
+        help="Skip auto-generating JSON/CSV after painting.",
+    )
+    paint_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Follow ASCII map strictly: no random grass/tree variations, always use legend defaults.",
     )
 
     edit_parser = subparsers.add_parser("edit", help="Open a .aseprite file in Aseprite GUI.")

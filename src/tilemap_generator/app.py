@@ -23,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("map", help="Map generation commands.", add_help=False)
     subparsers.add_parser("tileset", help="Aseprite tileset commands.", add_help=False)
+    subparsers.add_parser(
+        "export", help="Export tile indices from tilemap layers to JSON/CSV.", add_help=False
+    )
     subparsers.add_parser("menu", help="Interactive menu.", add_help=False)
 
     return parser
@@ -39,9 +42,10 @@ def prompt_str(label: str, default: str) -> str:
     return value if value else default
 
 
-def prompt_int(label: str, default: int) -> int:
+def prompt_int(label: str, default: int, range_hint: str = "") -> int:
+    hint = f" ({range_hint})" if range_hint else ""
     while True:
-        value = input(f"{label} [{default}]: ").strip()
+        value = input(f"{label}{hint} [{default}]: ").strip()
         if not value:
             return default
         try:
@@ -50,9 +54,10 @@ def prompt_int(label: str, default: int) -> int:
             print("Enter a valid integer.")
 
 
-def prompt_float(label: str, default: float) -> float:
+def prompt_float(label: str, default: float, range_hint: str = "") -> float:
+    hint = f" ({range_hint})" if range_hint else ""
     while True:
-        value = input(f"{label} [{default}]: ").strip()
+        value = input(f"{label}{hint} [{default}]: ").strip()
         if not value:
             return default
         try:
@@ -74,37 +79,104 @@ def prompt_bool(label: str, default: bool) -> bool:
         print("Enter y or n.")
 
 
+def _run_map_gen_defaults() -> None:
+    """Run map generation with sensible defaults (no prompts)."""
+    args = [
+        "--width", "128",
+        "--height", "128",
+        "--tree-density", "0.22",
+        "--forest-density", "0.65",
+        "--water-density", "0.10",
+        "--hill-density", "0.04",
+        "--spawn-count", "8",
+        "--spawn-clearing-size", "15",
+        "--join-point-count", "0",
+        "--path-width-threshold", "3",
+        "--path-perlin-scale", "14.0",
+        "--path-perlin-weight", "1.8",
+        "--mine-count", "4",
+        "--shop-count", "3",
+        "--creep-zone-count", "6",
+        "--creep-zone-radius", "2",
+        "--dead-end-count", "8",
+        "--map-mode", "island",
+        "--shoreline-erode-iterations", "2",
+        "--seed", "0",
+        "--out", "maps/generated_map.txt",
+        "--terrain-config", "examples/terrain.bitmask.json",
+        "--preview-tile-size", "16",
+        "--preview-in-aseprite",
+    ]
+    print("\nRunning map generation with defaults...\n")
+    map_gen_cli.main(args)
+    print("\n1. Send to paint")
+    print("2. Back to menu")
+    choice = input("Select [1-2]: ").strip() or "1"
+    if choice == "1":
+        _run_send_to_paint(
+            ascii_path="maps/generated_map.txt",
+            default_out="build/map.aseprite",
+            ascii_includes_water_border=True,
+            default_terrain_config="examples/terrain.bitmask.json",
+        )
+    else:
+        run_menu()
+
+
 def run_prompted_map_gen() -> None:
     print("\nGenerate New ASCII Map\n")
+    print("1. Auto generate via defaults")
+    print("2. Continue to custom")
+    mode = input("Select [1-2]: ").strip() or "1"
+    if mode == "1":
+        _run_map_gen_defaults()
+        return
     r = random.Random()
-    width = prompt_int("Width", r.randint(48, 128))
-    height = prompt_int("Height", r.randint(48, 128))
+    width = prompt_int("Width", 128, "8-512")
+    height = prompt_int("Height", 128, "8-512")
     # Default clearing size scales with map (must be odd, fit 4+ spawns)
     default_clearing = min(15, min(width, height) // 2)
     if default_clearing % 2 == 0:
         default_clearing = max(3, default_clearing - 1)
     else:
         default_clearing = max(3, default_clearing)
-    tree_density = prompt_float("Tree density", round(r.uniform(0.12, 0.32), 2))
-    forest_density = prompt_float("Forest density", round(r.uniform(0.45, 0.75), 2))
-    water_density = prompt_float("Water density", round(r.uniform(0.06, 0.18), 2))
-    spawn_count = prompt_int("Spawn count", r.randint(4, 12))
-    spawn_clearing_size = prompt_int("Spawn clearing size", default_clearing)
-    join_point_count = prompt_int("Join point count (0 = auto)", r.choice([0, 0, 0, 2, 3, 4]))
-    path_width_threshold = prompt_int("Path width threshold", r.choice([2, 3, 3, 4]))
-    path_perlin_scale = prompt_float("Path Perlin scale", round(r.uniform(10.0, 18.0), 1))
-    path_perlin_weight = prompt_float("Path Perlin weight", round(r.uniform(1.2, 2.2), 1))
-    mine_count = prompt_int("Mine count", r.randint(2, 6))
-    shop_count = prompt_int("Shop count", r.randint(2, 5))
-    creep_zone_count = prompt_int("Creep zone count", r.randint(4, 10))
-    creep_zone_radius = prompt_int("Creep zone radius", r.randint(2, 4))
-    dead_end_count = prompt_int("Dead-end count", r.randint(4, 12))
+    tree_density = prompt_float("Tree density", round(r.uniform(0.12, 0.32), 2), "0.0-1.0")
+    forest_density = prompt_float("Forest density", round(r.uniform(0.45, 0.75), 2), "0.0-1.0")
+    water_max = 1.0 - tree_density
+    while True:
+        water_density = prompt_float(
+            "Water density",
+            round(min(0.18, water_max * 0.9) if water_max > 0 else 0.01, 2),
+            f"0.0-{water_max:.2f} (tree+water ≤ 1.0)",
+        )
+        if tree_density + water_density <= 1.0:
+            break
+        print(f"  Tree + water = {tree_density + water_density:.2f} exceeds 1.0. Please re-enter.")
+    hill_density = prompt_float("Hill density", round(r.uniform(0.0, 0.08), 2), "0.0-1.0")
+    spawn_count = prompt_int("Spawn count", r.randint(4, 12), "1-32")
+    spawn_clearing_size = prompt_int("Spawn clearing size", default_clearing, "3-31 odd")
+    join_point_count = prompt_int("Join point count (0 = auto)", r.choice([0, 0, 0, 2, 3, 4]), "0-16")
+    path_width_threshold = prompt_int("Path width threshold", r.choice([2, 3, 3, 4]), "1-8")
+    path_perlin_scale = prompt_float("Path Perlin scale", round(r.uniform(10.0, 18.0), 1), "4-24")
+    path_perlin_weight = prompt_float("Path Perlin weight", round(r.uniform(1.2, 2.2), 1), "0.5-4.0")
+    mine_count = prompt_int("Mine count", r.randint(2, 6), "0-20")
+    shop_count = prompt_int("Shop count", r.randint(2, 5), "0-16")
+    creep_zone_count = prompt_int("Creep zone count", r.randint(4, 10), "0-24")
+    creep_zone_radius = prompt_int("Creep zone radius", r.randint(2, 4), "1-6")
+    dead_end_count = prompt_int("Dead-end count", r.randint(4, 12), "0-32")
     require_secret_npc = prompt_bool("Require single-path secret NPC", r.choice([True, True, False]))
-    seed = prompt_int("Seed", r.randint(0, 99999))
+    hide_path = prompt_bool("Hide path (no path corridors)", False)
+    map_mode = input("Map mode (island=ocean border, continent=land+trees border) [island]: ").strip().lower() or "island"
+    if map_mode not in ("island", "continent"):
+        map_mode = "island"
+    water_border_width = 2 if map_mode == "island" else 0
+    shoreline_erode = prompt_int("Shoreline erosion iterations (0=off, 2=default, more=rougher coastlines)", 2, "0-6")
+    seed = prompt_int("Seed", r.randint(0, 99999), "0 = random")
     out = prompt_str("Output ASCII map path", "maps/generated_map.txt")
+    terrain_config = input("Terrain config (legend + paths: grass, shoreline, hills, rivers, lakes) [examples/terrain.bitmask.json or blank]: ").strip()
     legend_out = input("Legend output path [auto from --out]: ").strip()
-    preview_in_aseprite = prompt_bool("Open preview in Aseprite when done", r.choice([True, False]))
-    preview_tile_size = prompt_int("Preview tile pixel size", r.choice([4, 6, 8, 8, 12, 16]))
+    preview_in_aseprite = prompt_bool("Open preview in Aseprite when done", True)
+    preview_tile_size = prompt_int("Preview tile pixel size", 16, "2-32")
     preview_out = input("Preview BMP path [auto from --out]: ").strip()
 
     args = [
@@ -118,6 +190,8 @@ def run_prompted_map_gen() -> None:
         str(forest_density),
         "--water-density",
         str(water_density),
+        "--hill-density",
+        str(hill_density),
         "--spawn-count",
         str(spawn_count),
         "--spawn-clearing-size",
@@ -140,6 +214,10 @@ def run_prompted_map_gen() -> None:
         str(creep_zone_radius),
         "--dead-end-count",
         str(dead_end_count),
+        "--map-mode",
+        map_mode,
+        "--shoreline-erode-iterations",
+        str(shoreline_erode),
         "--seed",
         str(seed),
         "--out",
@@ -150,6 +228,10 @@ def run_prompted_map_gen() -> None:
 
     if require_secret_npc:
         args.append("--require-secret-npc-path")
+    if hide_path:
+        args.append("--hide-path")
+    if terrain_config:
+        args.extend(["--terrain-config", terrain_config])
     if legend_out:
         args.extend(["--legend-out", legend_out])
     if preview_out:
@@ -160,32 +242,104 @@ def run_prompted_map_gen() -> None:
     print("\nRunning map generation...\n")
     map_gen_cli.main(args)
 
+    print("\n1. Send to paint")
+    print("2. Back to menu")
+    choice = input("Select [1-2]: ").strip() or "1"
+    if choice == "1":
+        _run_send_to_paint(
+            ascii_path=out,
+            default_out="build/map.aseprite",
+            ascii_includes_water_border=(map_mode == "island"),
+            default_terrain_config=terrain_config or None,
+        )
+    else:
+        run_menu()
 
-def run_prompted_paint() -> None:
+
+def _run_send_to_paint(
+    ascii_path: str | None = None,
+    default_out: str = "build/map.aseprite",
+    ascii_includes_water_border: bool = False,
+    default_terrain_config: str | None = None,
+) -> None:
+    """After 'Send to paint': prompt use auto defaults vs custom, then run paint."""
+    print("\n1. Use auto defaults")
+    print("2. Continue to custom")
+    choice = input("Select [1-2]: ").strip() or "1"
+    if choice == "1":
+        _run_paint_defaults(
+            ascii_path=ascii_path or "maps/generated_map.txt",
+            default_out=default_out,
+            ascii_includes_water_border=ascii_includes_water_border,
+            default_terrain_config=default_terrain_config,
+        )
+    else:
+        run_prompted_paint(
+            ascii_path=ascii_path,
+            default_out=default_out,
+            ascii_includes_water_border=ascii_includes_water_border,
+            default_terrain_config=default_terrain_config,
+        )
+
+
+def _run_paint_defaults(
+    ascii_path: str = "maps/generated_map.txt",
+    default_out: str = "build/map.aseprite",
+    ascii_includes_water_border: bool = False,
+    default_terrain_config: str | None = None,
+) -> None:
+    """Run paint with sensible defaults (no prompts)."""
+    args = [
+        "paint",
+        "--ascii", ascii_path,
+        "--out", default_out,
+        "--tile-size", "16",
+        "--treeset", "examples/trees.aseprite",
+        "--open",
+    ]
+    if default_terrain_config:
+        args.extend(["--terrain-config", default_terrain_config])
+    print("\nRunning paint with defaults...\n")
+    aseprite_cli.main(args)
+
+
+def run_prompted_paint(
+    ascii_path: str | None = None,
+    default_out: str = "build/map.aseprite",
+    ascii_includes_water_border: bool = False,
+    default_terrain_config: str | None = None,
+) -> None:
     print("\nPaint ASCII Map in Aseprite\n")
     r = random.Random()
-    ascii_path = prompt_str("ASCII map path", "maps/generated_map.txt")
-    out_path = prompt_str("Output .aseprite path", "build/map.aseprite")
-    tile_size = prompt_int("Tile size (pixels per cell)", 16)
-    treeset_path = input("Tree tileset path [blank = solid colors only]: ").strip()
-    grass_dir = ""
-    water_tile = ""
-    dirt_tile = ""
-    if treeset_path:
-        grass_dir = input("Grass tile directory [blank = solid colors]: ").strip()
-        water_tile = input("Water tile path [blank = auto or solid]: ").strip()
-        dirt_tile = input("Dirt tile path [blank = solid]: ").strip()
-    open_after = prompt_bool("Open in Aseprite when done", r.choice([True, False]))
-
+    ascii_path = prompt_str("ASCII map path", ascii_path or "maps/generated_map.txt")
+    out_path = prompt_str("Output .aseprite path", default_out)
+    tile_size = prompt_int("Tile size (pixels per cell)", 16, "8-64")
+    treeset_path = input("Tree tileset path [examples/trees.aseprite]: ").strip() or "examples/trees.aseprite"
+    terrain_default = default_terrain_config or ""
+    terrain_config = input(f"Terrain config (grass/water/dirt/trees + shoreline/hills/rivers/lakes + legend + bitmask) [{terrain_default or 'blank'}]: ").strip() or terrain_default
     args = ["paint", "--ascii", ascii_path, "--out", out_path, "--tile-size", str(tile_size)]
-    if treeset_path:
-        args.extend(["--treeset", treeset_path])
-    if grass_dir:
+    args.extend(["--treeset", treeset_path])
+    if terrain_config:
+        args.extend(["--terrain-config", terrain_config])
+    else:
+        grass_dir = input("Grass tile path [examples/grass.aseprite]: ").strip() or "examples/grass.aseprite"
+        water_tile = input("Water tile path [examples/water.aseprite]: ").strip() or "examples/water.aseprite"
+        dirt_tile = input("Dirt tile path [examples/dirt.aseprite]: ").strip() or "examples/dirt.aseprite"
+        default_border = 0 if ascii_includes_water_border else 2
+        water_border_width = prompt_int("Water border width (0 = in ASCII)", default_border, "0-8")
+        grass_shoreline_range = input("Grass shoreline tiles (e.g. 1-56 for grass.png) [1-56]: ").strip() or "1-56"
+        grass_shoreline_extended = input("Extended shoreline (peninsula/island, 5 tiles e.g. 19-23) [blank=off]: ").strip()
+        grass_shoreline_river = input("River bank tiles (2 tiles for N+S, E+W e.g. 24-25) [blank=off]: ").strip()
         args.extend(["--grass-dir", grass_dir])
-    if water_tile:
         args.extend(["--water-tile", water_tile])
-    if dirt_tile:
         args.extend(["--dirt-tile", dirt_tile])
+        args.extend(["--water-border-width", str(water_border_width)])
+        args.extend(["--grass-shoreline-range", grass_shoreline_range])
+        if grass_shoreline_extended:
+            args.extend(["--grass-shoreline-extended-range", grass_shoreline_extended])
+        if grass_shoreline_river:
+            args.extend(["--grass-shoreline-river-range", grass_shoreline_river])
+    open_after = prompt_bool("Open in Aseprite when done", True)
     if open_after:
         args.append("--open")
 
@@ -246,6 +400,15 @@ def main(argv: list[str] | None = None) -> None:
             aseprite_cli.main(["--help"])
             return
         aseprite_cli.main(forwarded)
+        return
+
+    if args.command == "export":
+        from tilemap_generator import export_cli
+
+        if not forwarded:
+            export_cli.main(["--help"])
+            return
+        export_cli.main(forwarded)
         return
 
     parser.error(f"Unsupported command: {args.command}")

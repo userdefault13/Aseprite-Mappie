@@ -4,8 +4,8 @@ ASCII_MAP ?= maps/sample_room.txt
 LEGEND ?= maps/sample_room.legend.json
 MAP_GEN_OUT ?= maps/generated_map.txt
 MAP_GEN_LEGEND ?= maps/generated_map.legend.json
-CANVAS_WIDTH ?= 96
-CANVAS_HEIGHT ?= 96
+CANVAS_WIDTH ?= 128
+CANVAS_HEIGHT ?= 128
 TREE_DENSITY ?= 0.20
 FOREST_DENSITY ?= 0.60
 WATER_DENSITY ?= 0.10
@@ -21,8 +21,9 @@ CREEP_ZONE_COUNT ?= 6
 CREEP_ZONE_RADIUS ?= 2
 DEAD_END_COUNT ?= 8
 REQUIRE_SECRET_NPC_PATH ?= 1
-PREVIEW_IN_ASEPRITE ?= 0
-PREVIEW_TILE_SIZE ?= 8
+MAP_MODE ?= island
+PREVIEW_IN_ASEPRITE ?= 1
+PREVIEW_TILE_SIZE ?= 16
 MAP_PREVIEW_OUT ?=
 ASEPRITE_BIN ?=
 SEED ?= 42
@@ -56,7 +57,7 @@ endif
 MAP_PAINT_OUT ?= build/map.aseprite
 TILE_SIZE ?= 16
 
-.PHONY: help map-gen aseprite-check tileset-init tileset-terrain tileset-edit tileset-export map-paint map-build map-build-validated pipeline
+.PHONY: help map-gen aseprite-check tileset-init tileset-terrain tileset-edit tileset-export map-paint map-build map-build-validated map-export pipeline extension-build
 
 help:
 	@echo "Targets:"
@@ -69,6 +70,8 @@ help:
 	@echo "  make tileset-export      # export PNG + JSON from .aseprite"
 	@echo "  make map-build           # build CSV + Tiled JSON from ASCII + legend"
 	@echo "  make map-build-validated # same as map-build, plus --aseprite-data validation"
+	@echo "  make map-export          # export tile indices from Tiled JSON to JSON/CSV"
+	@echo "  make extension-build     # build Export Tiles Metadata .aseprite-extension"
 	@echo "  make pipeline            # check + init + export + map-build-validated"
 	@echo ""
 	@echo "Common overrides:"
@@ -96,6 +99,7 @@ map-gen:
 		--creep-zone-count $(CREEP_ZONE_COUNT) \
 		--creep-zone-radius $(CREEP_ZONE_RADIUS) \
 		--dead-end-count $(DEAD_END_COUNT) \
+		--map-mode $(MAP_MODE) \
 		--preview-tile-size $(PREVIEW_TILE_SIZE) \
 		$(if $(strip $(MAP_PREVIEW_OUT)),--preview-out $(MAP_PREVIEW_OUT),) \
 		$(if $(strip $(ASEPRITE_BIN)),--aseprite-bin $(ASEPRITE_BIN),) \
@@ -148,5 +152,13 @@ map-build-validated:
 	$(PYTHON) scripts/ascii_to_tilemap.py \
 		$(MAP_BUILD_ARGS) \
 		--aseprite-data $(if $(strip $(ASEPRITE_DATA)),$(ASEPRITE_DATA),$(ASEPRITE_DATA_DEFAULT))
+
+map-export:
+	$(PYTHON) scripts/export_tilemap.py $(MAP_OUT_PREFIX).tiled.json -o $(MAP_OUT_PREFIX)_export
+
+extension-build:
+	@mkdir -p build
+	cd extensions && zip -r ../build/export-tiles-metadata.aseprite-extension export-tiles-metadata/
+	@echo "Built build/export-tiles-metadata.aseprite-extension"
 
 pipeline: aseprite-check tileset-init tileset-export map-build-validated

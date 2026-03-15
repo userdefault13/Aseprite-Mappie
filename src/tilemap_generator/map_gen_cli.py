@@ -8,11 +8,18 @@ import random
 import shutil
 import struct
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 GRASS_CHAR = "G"
+SHORELINE_CHAR = "B"  # Beach: grass adjacent to ocean 2-tile border (tiles 98-118)
+LAKE_SHORELINE_CHAR = "L"  # Lake: grass adjacent to inland water (tiles 51-59)
+RIVER_CHAR = "R"  # River bank: grass adjacent to narrow river channel (tiles 60-61)
+HILL_CHAR = "I"  # Hill: elevated terrain (tiles 14-50)
 WATER_CHAR = "~"
+DEEP_WATER_CHAR = "`"  # Water surrounded by water (no land adjacent)
+WATER_CHARS = frozenset({WATER_CHAR, DEEP_WATER_CHAR})
 TREE_CHAR = "T"
 FOREST_CHAR = "F"
 PATH_CHAR = "P"
@@ -25,11 +32,17 @@ DEAD_END_CHAR = "D"
 SECRET_NPC_CHAR = "N"
 
 Point = tuple[int, int]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAC_ASEPRITE_BIN = Path("/Applications/Aseprite.app/Contents/MacOS/aseprite")
 PREVIEW_COLORS: dict[str, tuple[int, int, int]] = {
     GRASS_CHAR: (104, 178, 76),
+    SHORELINE_CHAR: (194, 178, 128),  # Sandy/beach
+    LAKE_SHORELINE_CHAR: (120, 160, 180),  # Lake edge
+    RIVER_CHAR: (100, 140, 200),  # River bank
+    HILL_CHAR: (90, 120, 70),  # Hill
     ".": (104, 178, 76),
     WATER_CHAR: (72, 132, 224),
+    DEEP_WATER_CHAR: (48, 96, 180),  # Darker blue for deep water
     TREE_CHAR: (46, 108, 54),
     FOREST_CHAR: (30, 78, 40),
     PATH_CHAR: (181, 152, 102),
@@ -69,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         required=True,
         help="Fraction of map covered by water (0.0 to 1.0).",
+    )
+    parser.add_argument(
+        "--hill-density",
+        type=float,
+        default=0.0,
+        help="Fraction of map covered by hills (0.0 to 1.0). Default 0.",
     )
     parser.add_argument("--spawn-count", type=int, default=8, help="Number of spawn points.")
     parser.add_argument(
@@ -126,8 +145,60 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If set, adds one secret NPC reachable by exactly one branch path.",
     )
+    parser.add_argument(
+        "--hide-path",
+        action="store_true",
+        help="Do not carve paths. Spawns and joins remain, but corridors stay grass.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Optional RNG seed.")
+    parser.add_argument(
+        "--map-mode",
+        choices=["island", "continent"],
+        default=None,
+        help="Island: 2-tile water border (ocean). Continent: 2-tile land-with-trees border. Default from terrain config or island.",
+    )
+    parser.add_argument(
+        "--water-border-width",
+        type=int,
+        default=2,
+        help="(Island mode) Tiles of water border (default 2). Ignored in continent mode.",
+    )
+    parser.add_argument(
+        "--height-noise-scale",
+        type=float,
+        default=12.0,
+        help="Perlin scale for heightmap (larger = smoother terrain). Used for hills and shoreline depth.",
+    )
+    parser.add_argument(
+        "--hill-threshold",
+        type=float,
+        default=0.65,
+        help="Height above which tiles can become hills (0.0–1.0). Higher = hills only on peaks.",
+    )
+    parser.add_argument(
+        "--beach-height-max",
+        type=float,
+        default=0.45,
+        help="Max height for beach expansion (0.0–1.0). Low land near water gets wider beaches.",
+    )
+    parser.add_argument(
+        "--shoreline-erode-iterations",
+        type=int,
+        default=2,
+        help="Cellular automata iterations to erode water/land boundary (0=off, 2=default). Reduces straight coastlines.",
+    )
+    parser.add_argument(
+        "--shoreline-expand-depth",
+        type=int,
+        default=0,
+        help="Expand shoreline inward by N tiles where land is low (0=strict 1-tile border, default).",
+    )
     parser.add_argument("--out", required=True, help="Output ASCII map path.")
+    parser.add_argument(
+        "--terrain-config",
+        default="",
+        help="Terrain config JSON. Auto-uses examples/terrain.bitmask.json when omitted. Legend used for output.",
+    )
     parser.add_argument(
         "--legend-out",
         default="",
@@ -136,18 +207,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preview-out",
         default="",
-        help="Optional BMP preview path (defaults to <out>.preview.bmp when preview is enabled).",
+        help="Optional preview path (defaults to <out>.preview.aseprite or .preview.bmp when preview is enabled).",
     )
     parser.add_argument(
         "--preview-tile-size",
         type=int,
-        default=8,
-        help="Pixel size per tile in preview image.",
+        default=16,
+        help="Pixel size per tile in preview image (default 16).",
     )
     parser.add_argument(
         "--preview-in-aseprite",
         action="store_true",
-        help="Open a generated map preview in Aseprite when done.",
+        default=True,
+        dest="preview_in_aseprite",
+        help="Open a generated map preview in Aseprite when done (default).",
+    )
+    parser.add_argument(
+        "--no-preview-in-aseprite",
+        action="store_false",
+        dest="preview_in_aseprite",
+        help="Do not open preview in Aseprite.",
+    )
+    parser.add_argument(
+        "--preview-layered",
+        action="store_true",
+        default=True,
+        dest="preview_layered",
+        help="Output layered .aseprite preview with terrain separated into layers (default).",
+    )
+    parser.add_argument(
+        "--no-preview-layered",
+        action="store_false",
+        dest="preview_layered",
+        help="Output flat BMP preview instead of layered .aseprite.",
     )
     parser.add_argument(
         "--aseprite-bin",
@@ -189,6 +281,239 @@ def neighbors4(x: int, y: int, width: int, height: int) -> list[Point]:
     if y < height - 1:
         out.append((x, y + 1))
     return out
+
+
+def neighbors8(x: int, y: int, width: int, height: int) -> list[Point]:
+    """8-connected neighbors (including diagonals)."""
+    out: list[Point] = []
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                out.append((nx, ny))
+    return out
+
+
+def erode_water_land_boundary(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    protected: set[Point],
+    iterations: int = 2,
+    threshold: int = 5,
+) -> None:
+    """Cellular automata erosion to avoid straight coastlines. Mutates grid."""
+    land_chars = frozenset({GRASS_CHAR})
+    for _ in range(iterations):
+        changes: list[tuple[int, int, str]] = []
+        for y in range(height):
+            for x in range(width):
+                if (x, y) in protected:
+                    continue
+                ch = grid[y][x]
+                n8 = neighbors8(x, y, width, height)
+                n_water = sum(1 for nx, ny in n8 if grid[ny][nx] in WATER_CHARS)
+                n_land = sum(1 for nx, ny in n8 if grid[ny][nx] in land_chars)
+                if ch in land_chars and n_water >= threshold:
+                    changes.append((x, y, WATER_CHAR))
+                elif ch in WATER_CHARS and n_land >= threshold:
+                    changes.append((x, y, GRASS_CHAR))
+        for x, y, new_ch in changes:
+            grid[y][x] = new_ch
+
+
+def _is_border_water(px: int, py: int, width: int, height: int, water_border_width: int) -> bool:
+    """True if (px,py) is out of bounds and treated as ocean border."""
+    if px < 0 or px >= width or py < 0 or py >= height:
+        return water_border_width > 0
+    return False
+
+
+def ocean_connected_water_cells(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    water_border_width: int,
+) -> set[Point]:
+    """Water cells connected via NESW to the ocean (map edge). Used for shoreline vs lake separation."""
+    if water_border_width <= 0:
+        return set()
+    ocean_connected: set[Point] = set()
+    # Start from water cells at the map edge (adjacent to out-of-bounds ocean)
+    frontier: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            at_edge = x == 0 or x == width - 1 or y == 0 or y == height - 1
+            if at_edge:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    # BFS: expand to all water reachable via NESW
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+    return ocean_connected
+
+
+def continent_shoreline_cells(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    water_border_width: int = 0,
+    ocean_connected: set[Point] | None = None,
+) -> set[Point]:
+    """Grass adjacent to ocean (map edge or water connected to ocean via NESW). Sets B."""
+    out: set[Point] = set()
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != GRASS_CHAR:
+                continue
+            # Adjacent to map edge (out-of-bounds ocean)
+            if (
+                _is_border_water(x - 1, y, width, height, water_border_width)
+                or _is_border_water(x + 1, y, width, height, water_border_width)
+                or _is_border_water(x, y - 1, width, height, water_border_width)
+                or _is_border_water(x, y + 1, width, height, water_border_width)
+            ):
+                out.add((x, y))
+                continue
+            # Adjacent to ocean-connected water (water that reaches the ocean)
+            if ocean_connected:
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if 0 <= nx < width and 0 <= ny < height and (nx, ny) in ocean_connected:
+                        out.add((x, y))
+                        break
+    return out
+
+
+def lake_shoreline_cells(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    exclude: set[Point],
+    ocean_connected: set[Point],
+) -> set[Point]:
+    """Grass adjacent to inland water (lakes: water NOT connected to ocean). Sets L."""
+    out: set[Point] = set()
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != GRASS_CHAR or (x, y) in exclude:
+                continue
+            for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS:
+                    if (nx, ny) not in ocean_connected:  # Inland water only
+                        out.add((x, y))
+                        break
+    return out
+
+
+def mark_deep_water(grid: list[list[str]], width: int, height: int) -> None:
+    """Convert water cells with 4 water neighbors to deep water (`). Mutates grid."""
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != WATER_CHAR:
+                continue
+            n_water = sum(
+                1
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS
+            )
+            if n_water == 4:
+                grid[y][x] = DEEP_WATER_CHAR
+
+
+def river_water_cells(grid: list[list[str]], width: int, height: int) -> set[Point]:
+    """Water cells that form narrow channels (2 opposite water neighbors)."""
+    out: set[Point] = set()
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            n = sum(1 for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                    if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS)
+            if n != 2:
+                continue
+            # Check opposite: N-S or E-W
+            has_n = y > 0 and grid[y - 1][x] in WATER_CHARS
+            has_s = y < height - 1 and grid[y + 1][x] in WATER_CHARS
+            has_w = x > 0 and grid[y][x - 1] in WATER_CHARS
+            has_e = x < width - 1 and grid[y][x + 1] in WATER_CHARS
+            if (has_n and has_s) or (has_w and has_e):
+                out.add((x, y))
+    return out
+
+
+def river_bank_cells(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    river_cells: set[Point],
+    exclude: set[Point],
+    ocean_connected: set[Point],
+) -> set[Point]:
+    """Grass adjacent to river water that does NOT connect to ocean. Sets R. Rivers with ocean outlet use B."""
+    out: set[Point] = set()
+    for x, y in river_cells:
+        if (x, y) in ocean_connected:
+            continue  # River connects to ocean; banks handled by continent_shore
+        for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+            if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] == GRASS_CHAR and (nx, ny) not in exclude:
+                out.add((nx, ny))
+    return out
+
+
+def _is_ocean_border_cell(px: int, py: int, width: int, height: int, border: int) -> bool:
+    """True if (px,py) is in the outer border (ocean 2-tile band)."""
+    return (
+        px < border or px >= width - border or py < border or py >= height - border
+    )
+
+
+def continent_shoreline_after_wrap(
+    grid: list[list[str]],
+    water_border_width: int,
+) -> None:
+    """Per terrain rules: mark grass adjacent to ocean 2-tile border as B. Mutates grid."""
+    if water_border_width <= 0:
+        return
+    height = len(grid)
+    width = max(len(row) for row in grid) if grid else 0
+    border = water_border_width
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != GRASS_CHAR and grid[y][x] != LAKE_SHORELINE_CHAR:
+                continue
+            for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS:
+                    if _is_ocean_border_cell(nx, ny, width, height, border):
+                        grid[y][x] = SHORELINE_CHAR
+                        break
+
+
+def shoreline_cells(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    water_border_width: int = 0,
+    ocean_connected: set[Point] | None = None,
+) -> set[Point]:
+    """All grass adjacent to water (continent + lake). For vegetation_blocked."""
+    if ocean_connected is None:
+        ocean_connected = ocean_connected_water_cells(grid, width, height, water_border_width)
+    continent = continent_shoreline_cells(
+        grid, width, height, water_border_width, ocean_connected
+    )
+    lake = lake_shoreline_cells(grid, width, height, continent, ocean_connected)
+    return continent | lake
 
 
 def manhattan(a: Point, b: Point) -> int:
@@ -400,6 +725,55 @@ def perlin_like(x: float, y: float, seed: int) -> float:
     return total / norm if norm > 0 else 0.5
 
 
+def generate_heightmap(
+    width: int,
+    height: int,
+    seed: int,
+    scale: float = 12.0,
+) -> list[list[float]]:
+    """Generate a 0..1 heightmap using Perlin-like noise. Used for hills and shoreline depth."""
+    scale = max(scale, 1.0)
+    out: list[list[float]] = []
+    for y in range(height):
+        row: list[float] = []
+        for x in range(width):
+            v = perlin_like(x / scale, y / scale, seed)
+            row.append(max(0.0, min(1.0, v)))
+        out.append(row)
+    return out
+
+
+def expand_shoreline_by_height(
+    shore_cells: set[Point],
+    heightmap: list[list[float]],
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    beach_height_max: float,
+    max_depth: int = 0,
+) -> set[Point]:
+    """Expand shoreline inward where land height is low. max_depth=0: only 1 tile (no expansion)."""
+    expanded = set(shore_cells)
+    frontier = list(shore_cells)
+    depth = 0
+    while depth < max_depth and frontier:
+        next_frontier: list[Point] = []
+        for x, y in frontier:
+            for nx, ny in neighbors4(x, y, width, height):
+                if (nx, ny) in expanded:
+                    continue
+                if grid[ny][nx] != GRASS_CHAR:
+                    continue
+                h = heightmap[ny][nx]
+                if h > beach_height_max:
+                    continue
+                expanded.add((nx, ny))
+                next_frontier.append((nx, ny))
+        frontier = next_frontier
+        depth += 1
+    return expanded
+
+
 def fallback_l_path(start: Point, end: Point) -> list[Point]:
     x, y = start
     tx, ty = end
@@ -586,6 +960,7 @@ def place_clustered(
     target_count: int,
     rng: random.Random,
     blocked: set[Point],
+    eligible: set[Point] | None = None,
 ) -> int:
     if target_count <= 0:
         return 0
@@ -595,7 +970,9 @@ def place_clustered(
     available = [
         (x, y)
         for x, y in all_positions(width, height)
-        if grid[y][x] == GRASS_CHAR and (x, y) not in blocked
+        if grid[y][x] == GRASS_CHAR
+        and (x, y) not in blocked
+        and (eligible is None or (x, y) in eligible)
     ]
     if not available:
         return 0
@@ -621,6 +998,8 @@ def place_clustered(
         for nx, ny in neighbors:
             if grid[ny][nx] != GRASS_CHAR or (nx, ny) in blocked:
                 continue
+            if eligible is not None and (nx, ny) not in eligible:
+                continue
             grid[ny][nx] = fill_char
             frontier.append((nx, ny))
             placed += 1
@@ -633,7 +1012,9 @@ def place_clustered(
         available = [
             (x, y)
             for x, y in all_positions(width, height)
-            if grid[y][x] == GRASS_CHAR and (x, y) not in blocked
+            if grid[y][x] == GRASS_CHAR
+            and (x, y) not in blocked
+            and (eligible is None or (x, y) in eligible)
         ]
         rng.shuffle(available)
         for x, y in available[: target_count - placed]:
@@ -689,7 +1070,7 @@ def place_access_pois(
     for x, y in all_positions(width, height):
         if (x, y) in blocked:
             continue
-        if grid[y][x] == WATER_CHAR:
+        if grid[y][x] in WATER_CHARS:
             continue
         if not any(n in path_cells for n in neighbors4(x, y, width, height)):
             continue
@@ -724,7 +1105,7 @@ def place_creep_zones(
     candidates = [
         p
         for p in all_positions(width, height)
-        if p not in blocked and grid[p[1]][p[0]] != WATER_CHAR
+        if p not in blocked and grid[p[1]][p[0]] not in WATER_CHARS
     ]
     if len(candidates) < count:
         raise ValueError(
@@ -747,7 +1128,7 @@ def place_creep_zones(
                 cell = (x, y)
                 if cell in blocked:
                     continue
-                if grid[y][x] == WATER_CHAR:
+                if grid[y][x] in WATER_CHARS:
                     continue
                 grid[y][x] = CREEP_CHAR
                 creep_cells.add(cell)
@@ -817,9 +1198,154 @@ def write_preview_bmp(path: Path, grid: list[list[str]], tile_size: int) -> None
             f.write(row)
 
 
-def open_in_aseprite(path: Path, aseprite_bin: str) -> None:
+# Per-layer character sets for layered preview (bottom to top)
+_PREVIEW_LAYERS: list[tuple[str, frozenset[str]]] = [
+    ("Water", frozenset({WATER_CHAR, DEEP_WATER_CHAR})),
+    ("Grass", frozenset({GRASS_CHAR, "."})),
+    ("Shoreline", frozenset({SHORELINE_CHAR})),
+    ("Lake", frozenset({LAKE_SHORELINE_CHAR})),
+    ("River", frozenset({RIVER_CHAR})),
+    ("Hill", frozenset({HILL_CHAR})),
+    ("Trees", frozenset({TREE_CHAR, FOREST_CHAR})),
+    ("Dirt", frozenset({PATH_CHAR})),
+    ("POI", frozenset({SPAWN_CHAR, JOIN_CHAR, MINE_CHAR, SHOP_CHAR, CREEP_CHAR, DEAD_END_CHAR, SECRET_NPC_CHAR})),
+]
+
+
+def write_preview_layered(
+    path: Path,
+    grid: list[list[str]],
+    tile_size: int,
+    aseprite_bin: str = "",
+) -> None:
+    """Write a layered .aseprite preview with terrain separated into layers."""
+    from PIL import Image
+
+    if tile_size <= 0:
+        raise ValueError("--preview-tile-size must be > 0")
+    if not grid or not grid[0]:
+        raise ValueError("Cannot preview empty grid.")
+
+    tiles_h = len(grid)
+    tiles_w = len(grid[0])
+    img_w = tiles_w * tile_size
+    img_h = tiles_h * tile_size
+
     binary = resolve_aseprite_bin(aseprite_bin)
-    subprocess.run([str(binary), str(path)], check=True)
+    lua_script = PROJECT_ROOT / "assets/lua/paint_preview_layered.lua"
+    if not lua_script.exists():
+        raise FileNotFoundError(f"Missing Lua script: {lua_script}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        layer_paths: dict[str, Path] = {}
+
+        def _is_adjacent_to_water_or_shoreline(g: list[list[str]], px: int, py: int) -> bool:
+            """True if (px,py) has a NESW neighbor that is water or shoreline (B/L/R)."""
+            for nx, ny in neighbors4(px, py, tiles_w, tiles_h):
+                c = g[ny][nx] if ny < len(g) and nx < len(g[ny]) else "."
+                if c in WATER_CHARS or c in (SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR):
+                    return True
+            return False
+
+        for layer_name, chars in _PREVIEW_LAYERS:
+            layer_img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+            for ty in range(tiles_h):
+                for tx in range(tiles_w):
+                    ch = grid[ty][tx] if ty < len(grid) and tx < len(grid[ty]) else "."
+                    # Shoreline: also draw P adjacent to water/shoreline (path on beach → reserve for shoreline)
+                    if layer_name == "Shoreline" and ch == PATH_CHAR and _is_adjacent_to_water_or_shoreline(grid, tx, ty):
+                        r, g, b = PREVIEW_COLORS[SHORELINE_CHAR]
+                    elif ch not in chars:
+                        continue
+                    else:
+                        # Dirt: skip path cells adjacent to water or shoreline (reserve for shoreline)
+                        if layer_name == "Dirt" and _is_adjacent_to_water_or_shoreline(grid, tx, ty):
+                            continue
+                        r, g, b = PREVIEW_COLORS.get(ch, (255, 0, 255))
+                    x0, y0 = tx * tile_size, ty * tile_size
+                    for dy in range(tile_size):
+                        for dx in range(tile_size):
+                            layer_img.putpixel((x0 + dx, y0 + dy), (r, g, b, 255))
+
+            png_path = tmp_path / f"{layer_name.lower()}.png"
+            layer_img.save(png_path)
+            layer_paths[layer_name] = png_path
+
+        env = os.environ.copy()
+        env["OUT"] = str(path.resolve())
+        env["WIDTH"] = str(img_w)
+        env["HEIGHT"] = str(img_h)
+        for layer_name, png_path in layer_paths.items():
+            env[f"{layer_name.upper()}_PNG"] = str(png_path)
+
+        subprocess.run(
+            [str(binary), "-b", "--script", str(lua_script)],
+            env=env,
+            check=True,
+        )
+
+
+def open_in_aseprite(path: Path, aseprite_bin: str) -> None:
+    """Launch Aseprite with the given path. Runs in background so the CLI prompt appears immediately."""
+    binary = resolve_aseprite_bin(aseprite_bin)
+    subprocess.Popen(
+        [str(binary), str(path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def wrap_with_water_border(grid: list[list[str]], border: int) -> list[list[str]]:
+    """Wrap content grid with water border. Returns expanded grid."""
+    if border <= 0:
+        return grid
+    h = len(grid)
+    w = len(grid[0]) if grid else 0
+    out_w = w + 2 * border
+    out_h = h + 2 * border
+    out: list[list[str]] = []
+    water_row = [WATER_CHAR] * out_w
+    for _ in range(border):
+        out.append(water_row[:])
+    for row in grid:
+        out.append([WATER_CHAR] * border + row + [WATER_CHAR] * border)
+    for _ in range(border):
+        out.append(water_row[:])
+    return out
+
+
+def wrap_with_land_border(
+    grid: list[list[str]],
+    border: int,
+    rng: random.Random,
+    tree_fraction: float = 0.7,
+) -> list[list[str]]:
+    """Wrap content grid with land border (grass + trees). Returns expanded grid."""
+    if border <= 0:
+        return grid
+    h = len(grid)
+    w = len(grid[0]) if grid else 0
+    out_w = w + 2 * border
+    out_h = h + 2 * border
+    out: list[list[str]] = []
+
+    def border_cell() -> str:
+        return FOREST_CHAR if rng.random() < tree_fraction else TREE_CHAR
+
+    for _ in range(border):
+        out.append([border_cell() for _ in range(out_w)])
+    for row in grid:
+        left = [border_cell() for _ in range(border)]
+        right = [border_cell() for _ in range(border)]
+        out.append(left + row + right)
+    for _ in range(border):
+        out.append([border_cell() for _ in range(out_w)])
+    return out
 
 
 def write_ascii(path: Path, grid: list[list[str]]) -> None:
@@ -828,22 +1354,11 @@ def write_ascii(path: Path, grid: list[list[str]]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_legend(path: Path) -> None:
-    legend = {
-        GRASS_CHAR: 1,
-        ".": 1,
-        WATER_CHAR: 2,
-        TREE_CHAR: 3,
-        FOREST_CHAR: 4,
-        PATH_CHAR: 5,
-        SPAWN_CHAR: 6,
-        JOIN_CHAR: 7,
-        MINE_CHAR: 8,
-        SHOP_CHAR: 9,
-        CREEP_CHAR: 10,
-        DEAD_END_CHAR: 11,
-        SECRET_NPC_CHAR: 12,
-    }
+def write_legend(path: Path, legend: dict[str, int] | None = None) -> None:
+    from tilemap_generator.legend import DEFAULT_LEGEND
+
+    if legend is None:
+        legend = DEFAULT_LEGEND.copy()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(legend, indent=2) + "\n", encoding="utf-8")
 
@@ -851,7 +1366,39 @@ def write_legend(path: Path) -> None:
 def run_from_args(args: argparse.Namespace) -> None:
     if args.width <= 0 or args.height <= 0:
         raise ValueError("--width and --height must be positive integers.")
-    if args.path_width_threshold <= 0:
+
+    # Apply terrain config rules: water_border_width from config when using terrain config
+    terrain_config = getattr(args, "terrain_config", "") or ""
+    tc_path: Path | None = None
+    if terrain_config:
+        tc_path = Path(terrain_config)
+        if not tc_path.exists():
+            for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                candidate = base / tc_path
+                if candidate.exists():
+                    tc_path = candidate
+                    break
+    if not tc_path or not tc_path.exists():
+        for candidate in (
+            PROJECT_ROOT / "examples" / "terrain.bitmask.json",
+            PROJECT_ROOT / "terrain.bitmask.json",
+        ):
+            if candidate.exists():
+                tc_path = candidate
+                break
+    if tc_path and tc_path.exists():
+        from tilemap_generator.paint_map_png import load_terrain_config
+
+        terrain_cfg = load_terrain_config(tc_path, project_root=PROJECT_ROOT)
+        if args.map_mode is None:
+            cfg_map_mode = terrain_cfg.get("map_mode")
+            args.map_mode = cfg_map_mode if cfg_map_mode in ("island", "continent") else "island"
+        cfg_border = terrain_cfg.get("water_border_width")
+        if cfg_border is not None and isinstance(cfg_border, (int, float)):
+            args.water_border_width = max(0, int(cfg_border))
+    if args.map_mode is None:
+        args.map_mode = "island"
+    if not args.hide_path and args.path_width_threshold <= 0:
         raise ValueError("--path-width-threshold must be > 0.")
     if args.preview_tile_size <= 0:
         raise ValueError("--preview-tile-size must be > 0.")
@@ -863,6 +1410,7 @@ def run_from_args(args: argparse.Namespace) -> None:
     validate_density(args.tree_density, "--tree-density")
     validate_density(args.forest_density, "--forest-density")
     validate_density(args.water_density, "--water-density")
+    validate_density(getattr(args, "hill_density", 0.0), "--hill-density")
     if args.tree_density + args.water_density > 1.0:
         raise ValueError("--tree-density + --water-density cannot exceed 1.0")
 
@@ -894,82 +1442,87 @@ def run_from_args(args: argparse.Namespace) -> None:
     path_cells: set[Point] = set()
     path_forbidden = set(clearing_cells)
 
-    for spawn in spawn_points:
-        target = min(join_points, key=lambda p: manhattan(spawn, p))
-        anchor = spawn_anchor_outside_clearing(
-            spawn, target, clearing_half, path_radius, args.width, args.height
-        )
-        route = find_perlin_path(
-            anchor,
-            target,
-            args.width,
-            args.height,
-            path_forbidden,
-            seed=args.seed + 911,
-            scale=args.path_perlin_scale,
-            weight=args.path_perlin_weight,
-        )
-        carve_path(grid, route, path_width, path_cells, path_forbidden)
-
-    for a, b in build_mst(join_points):
-        route = find_perlin_path(
-            a,
-            b,
-            args.width,
-            args.height,
-            path_forbidden,
-            seed=args.seed + 1911,
-            scale=args.path_perlin_scale,
-            weight=args.path_perlin_weight,
-        )
-        carve_path(grid, route, path_width, path_cells, path_forbidden)
-
-    dead_end_points: list[Point] = []
-    branch_forbidden = set(clearing_cells)
-    for i in range(args.dead_end_count):
-        route = build_branch(
-            grid=grid,
-            path_cells=path_cells,
-            base_forbidden=branch_forbidden,
-            rng=rng,
-            seed=args.seed + 3000 + i * 29,
-            scale=args.path_perlin_scale,
-            weight=args.path_perlin_weight,
-            path_width=path_width,
-            min_length=max(8, args.spawn_clearing_size // 2),
-            max_length=max(14, min(args.width, args.height) // 3),
-            search_attempts=180,
-        )
-        if route is None:
-            raise ValueError(
-                f"Could not place dead-end branch {i + 1}/{args.dead_end_count}. "
-                "Increase canvas size or reduce dead-end count."
+    if not args.hide_path:
+        for spawn in spawn_points:
+            target = min(join_points, key=lambda p: manhattan(spawn, p))
+            anchor = spawn_anchor_outside_clearing(
+                spawn, target, clearing_half, path_radius, args.width, args.height
             )
-        carve_path(grid, route, path_width, path_cells, branch_forbidden)
-        dead_end_points.append(route[-1])
-
-    secret_npc_point: Point | None = None
-    if args.require_secret_npc_path:
-        route = build_branch(
-            grid=grid,
-            path_cells=path_cells,
-            base_forbidden=branch_forbidden,
-            rng=rng,
-            seed=args.seed + 9001,
-            scale=args.path_perlin_scale,
-            weight=args.path_perlin_weight,
-            path_width=path_width,
-            min_length=max(12, args.spawn_clearing_size),
-            max_length=max(20, min(args.width, args.height) // 2),
-            search_attempts=260,
-        )
-        if route is None:
-            raise ValueError(
-                "Could not place secret NPC branch with single-path constraint. "
-                "Increase canvas size or reduce feature/path density."
+            route = find_perlin_path(
+                anchor,
+                target,
+                args.width,
+                args.height,
+                path_forbidden,
+                seed=args.seed + 911,
+                scale=args.path_perlin_scale,
+                weight=args.path_perlin_weight,
             )
-        carve_path(grid, route, path_width, path_cells, branch_forbidden)
-        secret_npc_point = route[-1]
+            carve_path(grid, route, path_width, path_cells, path_forbidden)
+
+        for a, b in build_mst(join_points):
+            route = find_perlin_path(
+                a,
+                b,
+                args.width,
+                args.height,
+                path_forbidden,
+                seed=args.seed + 1911,
+                scale=args.path_perlin_scale,
+                weight=args.path_perlin_weight,
+            )
+            carve_path(grid, route, path_width, path_cells, path_forbidden)
+
+        dead_end_points: list[Point] = []
+        branch_forbidden = set(clearing_cells)
+        for i in range(args.dead_end_count):
+            route = build_branch(
+                grid=grid,
+                path_cells=path_cells,
+                base_forbidden=branch_forbidden,
+                rng=rng,
+                seed=args.seed + 3000 + i * 29,
+                scale=args.path_perlin_scale,
+                weight=args.path_perlin_weight,
+                path_width=path_width,
+                min_length=max(8, args.spawn_clearing_size // 2),
+                max_length=max(14, min(args.width, args.height) // 3),
+                search_attempts=180,
+            )
+            if route is None:
+                continue  # Skip this branch; proceed with fewer dead-ends
+            carve_path(grid, route, path_width, path_cells, branch_forbidden)
+            dead_end_points.append(route[-1])
+
+        secret_npc_point: Point | None = None
+        if args.require_secret_npc_path:
+            route = build_branch(
+                grid=grid,
+                path_cells=path_cells,
+                base_forbidden=branch_forbidden,
+                rng=rng,
+                seed=args.seed + 9001,
+                scale=args.path_perlin_scale,
+                weight=args.path_perlin_weight,
+                path_width=path_width,
+                min_length=max(12, args.spawn_clearing_size),
+                max_length=max(20, min(args.width, args.height) // 2),
+                search_attempts=260,
+            )
+            if route is None:
+                pass  # Skip secret NPC; proceed without it
+            else:
+                carve_path(grid, route, path_width, path_cells, branch_forbidden)
+                secret_npc_point = route[-1]
+    else:
+        dead_end_points = []
+        secret_npc_point = None
+        # For POI placement when path is hidden, use spawns, joins, and their neighbors
+        path_cells = set(spawn_points) | set(join_points)
+        for px, py in list(path_cells):
+            for nx, ny in neighbors4(px, py, args.width, args.height):
+                if grid[ny][nx] == GRASS_CHAR:
+                    path_cells.add((nx, ny))
 
     # Enforce spawn clearings and key markers after all path carving.
     for x, y in clearing_cells:
@@ -1002,20 +1555,137 @@ def run_from_args(args: argparse.Namespace) -> None:
     water_target = min(int(round(total_tiles * args.water_density)), placeable)
     water_placed = place_clustered(grid, WATER_CHAR, water_target, rng, terrain_blocked)
 
+    # Erode water/land boundary to avoid straight coastlines (before deep water marking)
+    erode_iterations = getattr(args, "shoreline_erode_iterations", 2)
+    if erode_iterations > 0:
+        erode_water_land_boundary(
+            grid, args.width, args.height,
+            protected=terrain_blocked,
+            iterations=erode_iterations,
+        )
+
+    mark_deep_water(grid, args.width, args.height)
+
+    # Heightmap for hills and shoreline expansion (separate seed from path noise)
+    heightmap = generate_heightmap(
+        args.width,
+        args.height,
+        args.seed + 5555,
+        getattr(args, "height_noise_scale", 12.0),
+    )
+
+    # Terrain rules: B=continent shore (ocean-connected water), L=lake (inland water), R=river bank (rivers not to ocean)
+    map_mode = getattr(args, "map_mode", "island")
+    is_island = map_mode == "island"
+    water_border = max(0, args.water_border_width) if is_island else 0
+    ocean_connected = ocean_connected_water_cells(grid, args.width, args.height, water_border)
+    continent_shore = continent_shoreline_cells(
+        grid, args.width, args.height,
+        water_border_width=water_border,
+        ocean_connected=ocean_connected,
+    )
+    lake_shore = lake_shoreline_cells(
+        grid, args.width, args.height,
+        exclude=continent_shore,
+        ocean_connected=ocean_connected,
+    )
+    river_cells = river_water_cells(grid, args.width, args.height)
+    river_bank = river_bank_cells(
+        grid, args.width, args.height, river_cells,
+        exclude=continent_shore | lake_shore,
+        ocean_connected=ocean_connected,
+    )
+
+    # Shoreline: 1-tile-wide border only (no expansion). Shore tiles connect via NESW.
+    beach_height_max = getattr(args, "beach_height_max", 0.45)
+    shoreline_expand_depth = getattr(args, "shoreline_expand_depth", 0)
+    continent_shore = expand_shoreline_by_height(
+        continent_shore, heightmap, grid, args.width, args.height, beach_height_max,
+        max_depth=shoreline_expand_depth,
+    )
+    lake_shore = expand_shoreline_by_height(
+        lake_shore, heightmap, grid, args.width, args.height, beach_height_max,
+        max_depth=shoreline_expand_depth,
+    )
+    lake_shore = lake_shore - continent_shore  # Continent takes precedence
+    river_bank = expand_shoreline_by_height(
+        river_bank, heightmap, grid, args.width, args.height, beach_height_max,
+        max_depth=shoreline_expand_depth,
+    )
+    river_bank = river_bank - continent_shore - lake_shore  # Ocean and lake shores take precedence
+
+    # Set terrain chars: B, L, R
+    for x, y in continent_shore:
+        grid[y][x] = SHORELINE_CHAR
+    for x, y in lake_shore:
+        grid[y][x] = LAKE_SHORELINE_CHAR
+    for x, y in river_bank:
+        grid[y][x] = RIVER_CHAR
+
+    # Post-process: ensure shoreline connects when water divides it.
+    # Any land (G, ., P) adjacent to water but not yet B/L/R gets marked so both banks render.
+    _land_chars = frozenset({GRASS_CHAR, "."})
+    for _ in range(2):  # 2 passes to propagate across narrow channels
+        added_continent: set[Point] = set()
+        added_lake: set[Point] = set()
+        for y in range(args.height):
+            for x in range(args.width):
+                if grid[y][x] not in _land_chars:
+                    continue
+                if (x, y) in continent_shore or (x, y) in lake_shore or (x, y) in river_bank:
+                    continue
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if 0 <= nx < args.width and 0 <= ny < args.height:
+                        if grid[ny][nx] in WATER_CHARS:
+                            if (nx, ny) in ocean_connected:
+                                added_continent.add((x, y))
+                            else:
+                                added_lake.add((x, y))
+                            break
+        for x, y in added_continent:
+            continent_shore.add((x, y))
+            grid[y][x] = SHORELINE_CHAR
+        for x, y in added_lake:
+            if (x, y) not in continent_shore:
+                lake_shore.add((x, y))
+                grid[y][x] = LAKE_SHORELINE_CHAR
+        if not added_continent and not added_lake:
+            break
+
+    vegetation_blocked = terrain_blocked | continent_shore | lake_shore | river_bank
+    shoreline_blocked = continent_shore | lake_shore | river_bank
+
+    # Hills (I) on remaining grass, only where height > hill_threshold
+    hill_blocked = terrain_blocked | continent_shore | lake_shore | river_bank
+    hill_threshold = getattr(args, "hill_threshold", 0.65)
+    hill_eligible = {
+        (x, y)
+        for x, y in all_positions(args.width, args.height)
+        if heightmap[y][x] >= hill_threshold
+    }
+    hill_placeable = sum(
+        1 for x, y in all_positions(args.width, args.height)
+        if grid[y][x] == GRASS_CHAR and (x, y) not in hill_blocked and (x, y) in hill_eligible
+    )
+    hill_target = min(int(round(total_tiles * getattr(args, "hill_density", 0.0))), hill_placeable)
+    hill_placed = place_clustered(
+        grid, HILL_CHAR, hill_target, rng, hill_blocked, eligible=hill_eligible
+    )
+
     remaining_placeable = sum(
         1
         for x, y in all_positions(args.width, args.height)
-        if grid[y][x] == GRASS_CHAR and (x, y) not in terrain_blocked
+        if grid[y][x] == GRASS_CHAR and (x, y) not in vegetation_blocked
     )
     vegetation_target = min(int(round(total_tiles * args.tree_density)), remaining_placeable)
     forest_target = int(round(vegetation_target * args.forest_density))
     tree_target = max(0, vegetation_target - forest_target)
-    forest_placed = place_clustered(grid, FOREST_CHAR, forest_target, rng, terrain_blocked)
+    forest_placed = place_clustered(grid, FOREST_CHAR, forest_target, rng, vegetation_blocked)
 
     tree_candidates = [
         (x, y)
         for x, y in all_positions(args.width, args.height)
-        if grid[y][x] == GRASS_CHAR and (x, y) not in terrain_blocked
+        if grid[y][x] == GRASS_CHAR and (x, y) not in vegetation_blocked
     ]
     rng.shuffle(tree_candidates)
     tree_placed = 0
@@ -1027,11 +1697,11 @@ def run_from_args(args: argparse.Namespace) -> None:
         grid=grid,
         count=args.creep_zone_count,
         radius=args.creep_zone_radius,
-        blocked=terrain_blocked,
+        blocked=terrain_blocked | shoreline_blocked,
         rng=rng,
     )
 
-    poi_blocked = terrain_blocked | creep_cells
+    poi_blocked = terrain_blocked | creep_cells | shoreline_blocked
     mine_points = place_access_pois(
         grid=grid,
         path_cells=path_cells,
@@ -1063,19 +1733,94 @@ def run_from_args(args: argparse.Namespace) -> None:
     if secret_npc_point is not None:
         grid[secret_npc_point[1]][secret_npc_point[0]] = SECRET_NPC_CHAR
 
+    border_width = 2  # Min 2-tile border for both modes
+    if is_island:
+        water_border = max(border_width, args.water_border_width)
+        grid = wrap_with_water_border(grid, water_border)
+        # Terrain rules: any grass/L adjacent to ocean 2-tile border is B
+        continent_shoreline_after_wrap(grid, water_border)
+    else:
+        # Continent mode: 2-tile land-with-trees border
+        grid = wrap_with_land_border(grid, border_width, rng, tree_fraction=0.7)
+
     out_path = Path(args.out)
     legend_path = Path(args.legend_out) if args.legend_out else out_path.with_suffix(".legend.json")
+
+    legend: dict[str, int] | None = None
+    terrain_config = getattr(args, "terrain_config", "") or ""
+    tc_path: Path | None = None
+    if terrain_config:
+        tc_path = Path(terrain_config)
+        if not tc_path.exists():
+            for base in (PROJECT_ROOT / "examples", PROJECT_ROOT):
+                candidate = base / tc_path
+                if candidate.exists():
+                    tc_path = candidate
+                    break
+    else:
+        # Auto-use terrain config when not provided
+        for candidate in (
+            PROJECT_ROOT / "examples" / "terrain.bitmask.json",
+            PROJECT_ROOT / "terrain.bitmask.json",
+        ):
+            if candidate.exists():
+                tc_path = candidate
+                break
+    if tc_path and tc_path.exists():
+        from tilemap_generator.legend import (
+            DEFAULT_LEGEND,
+            get_legend_from_config,
+            get_terrain_rules,
+        )
+        from tilemap_generator.paint_map_png import load_terrain_config
+
+        terrain_cfg = load_terrain_config(tc_path, project_root=PROJECT_ROOT)
+        legend = get_legend_from_config(terrain_cfg)
+        rules = get_terrain_rules(terrain_cfg)
+        if rules:
+            # Terrain rules enforced: shorelines block trees; legend from config
+            pass
+    if legend is None:
+        legend = DEFAULT_LEGEND.copy()
+
     write_ascii(out_path, grid)
-    write_legend(legend_path)
+    write_legend(legend_path, legend)
 
     preview_path: Path | None = None
     if args.preview_in_aseprite or args.preview_out:
-        preview_path = Path(args.preview_out) if args.preview_out else out_path.with_suffix(".preview.bmp")
-        write_preview_bmp(preview_path, grid, args.preview_tile_size)
+        use_layered = getattr(args, "preview_layered", True)
+        if args.preview_out:
+            preview_path = Path(args.preview_out)
+            if preview_path.suffix.lower() == ".bmp":
+                use_layered = False
+            elif preview_path.suffix.lower() in (".aseprite", ".ase"):
+                use_layered = True
+        else:
+            ext = ".preview.aseprite" if use_layered else ".preview.bmp"
+            preview_path = out_path.with_suffix(ext)
+
+        if use_layered:
+            try:
+                write_preview_layered(
+                    preview_path,
+                    grid,
+                    args.preview_tile_size,
+                    getattr(args, "aseprite_bin", "") or "",
+                )
+            except FileNotFoundError as exc:
+                if "Aseprite" in str(exc) or "aseprite" in str(exc).lower():
+                    print(f"Warning: {exc}. Falling back to flat BMP preview.")
+                    preview_path = out_path.with_suffix(".preview.bmp")
+                    write_preview_bmp(preview_path, grid, args.preview_tile_size)
+                else:
+                    raise
+        else:
+            write_preview_bmp(preview_path, grid, args.preview_tile_size)
+
         print(f"Wrote {preview_path}")
         if args.preview_in_aseprite:
             try:
-                open_in_aseprite(preview_path, args.aseprite_bin)
+                open_in_aseprite(preview_path, getattr(args, "aseprite_bin", "") or "")
             except (FileNotFoundError, subprocess.CalledProcessError) as exc:
                 print(f"Warning: failed to open preview in Aseprite: {exc}")
 
@@ -1086,8 +1831,8 @@ def run_from_args(args: argparse.Namespace) -> None:
         f"spawns={len(spawn_points)}, joins={len(join_points)}, "
         f"dead_ends={len(dead_end_points)}, secret_npc={'1' if secret_npc_point else '0'}, "
         f"path_tiles={len(path_cells)}, mines={len(mine_points)}, shops={len(shop_points)}, "
-        f"creep_zones={len(creep_centers)}, water={water_placed}, forest={forest_placed}, "
-        f"trees={tree_placed}, path_width={path_width}"
+        f"creep_zones={len(creep_centers)}, water={water_placed}, hills={hill_placed}, "
+        f"forest={forest_placed}, trees={tree_placed}, path_width={path_width}"
     )
 
 

@@ -1,0 +1,6 @@
+{
+  "range": [60, 97],
+  "bank_range": [60, 61],
+  "masks": [5, 10],
+  "_comment": "Masks 5=N+S (vertical river), 10=E+W (horizontal river). Bank tiles for grass adjacent to narrow channels."
+}

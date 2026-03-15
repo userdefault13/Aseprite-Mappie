@@ -1,0 +1,28 @@
+{
+  "range": [14, 50],
+  "single": 14,
+  "2x2_corners": [15, 16, 22, 23],
+  "3x3_grid": {
+    "top": [15, 19, 16],
+    "mid": [20, 1, 21],
+    "bot": [17, 31, 18]
+  },
+  "protruding": {
+    "north": 23,
+    "west": 24,
+    "4way": 25,
+    "east": 26,
+    "south": 27
+  },
+  "extruding": {
+    "corners": [28, 31, 36, 39],
+    "horizontal_north": 29,
+    "horizontal_south": 37,
+    "vertical_left": 32,
+    "vertical_right": 33
+  },
+  "connectors": {
+    "range": [40, 50],
+    "description": "90-degree turns, T-junctions, 4-way crosses"
+  }
+}

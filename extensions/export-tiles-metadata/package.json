@@ -1,0 +1,19 @@
+{
+  "name": "export-tiles-metadata",
+  "displayName": "Export Tiles Metadata",
+  "description": "Export tileset tiles and metadata (index, id, data, x, y) to JSON and CSV.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Aseprite-Mappie",
+    "url": "https://github.com/aseprite-mappie"
+  },
+  "contributors": [],
+  "publisher": "aseprite-mappie",
+  "license": "MIT",
+  "categories": ["Scripts"],
+  "contributes": {
+    "scripts": [
+      { "path": "./export_tiles_metadata.lua" }
+    ]
+  }
+}

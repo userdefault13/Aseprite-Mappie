@@ -19,6 +19,7 @@ tilemap-gen = "tilemap_generator.cli:main"
 tilemap-mapgen = "tilemap_generator.map_gen_cli:main"
 tilemap-aseprite = "tilemap_generator.aseprite_cli:main"
 tilemap-app = "tilemap_generator.app:main"
+tilemap-export = "tilemap_generator.export_cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

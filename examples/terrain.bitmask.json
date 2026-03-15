@@ -1,0 +1,207 @@
+{
+  "tile_width": 16,
+  "tile_height": 16,
+
+  "legend": {
+    "G": 1,
+    ".": 1,
+    "B": 98,
+    "L": 51,
+    "R": 60,
+    "I": 14,
+    "~": 2,
+    "`": 3,
+    "T": 4,
+    "F": 5,
+    "P": 6,
+    "S": 7,
+    "J": 8,
+    "M": 9,
+    "H": 10,
+    "C": 11,
+    "D": 12,
+    "N": 13
+  },
+
+  "grass_path": "grass.aseprite",
+  "shoreline_path": "shorelines.aseprite",
+  "lakesrivers_path": "lakesrivers.aseprite",
+  "water_path": "water.aseprite",
+  "hill_path": "hills.aseprite",
+  "dirt_path": "dirt.aseprite",
+  "trees_path": "trees.aseprite",
+
+  "_layout": "Documentation of grass.png tile organization. Adjust grass_shoreline mapping to match your tile visuals. N=1,E=2,S=4,W=8 for water adjacency bitmask.",
+
+  "map_mode": "island",
+  "water_border_width": 2,
+
+  "_rules": [
+    "B = continent shoreline: water connected via NESW to the 2-tile ocean border. Grass adjacent to that water.",
+    "L = lake shoreline: inland water (not connected to ocean). Grass adjacent to lakes/ponds.",
+    "R = river bank: rivers that do NOT connect to the ocean. Rivers with ocean outlet use B.",
+    "Shoreline, lake, and river tiles: only 1 connecting border each (no expansion inland).",
+    "Trees cannot be placed on B/L/R.",
+    "Shoreline: shoreline_path (shorelines.aseprite) uses shoreline.shoreline_map for bitmask->tile. Override shoreline_map to match your sheet layout."
+  ],
+
+  "grass": {
+    "range": [1, 13],
+    "default": 1,
+    "default_weight": 0.55,
+    "description": "Tiles 1-13: grass. 1 = default, 2-13 = variations. default_weight > 0.5 ensures tile 1 uses >50% of interior grass."
+  },
+
+  "hill": {
+    "range": [1, 37],
+    "hill_map": {
+      "0": 1, "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8,
+      "8": 9, "9": 10, "10": 11, "11": 12, "12": 13, "13": 14, "14": 15, "15": 16
+    },
+    "2x2_corners": [15, 16, 22, 23],
+    "3x3_grid": {
+      "top": [15, 19, 16],
+      "mid": [20, 1, 21],
+      "bot": [17, 31, 18]
+    },
+    "protruding": {
+      "north": 23,
+      "west": 24,
+      "4way": 25,
+      "east": 26,
+      "south": 27
+    },
+    "extruding": {
+      "corners": [28, 31, 36, 39],
+      "horizontal_north": 29,
+      "horizontal_south": 37,
+      "vertical_left": 32,
+      "vertical_right": 33
+    },
+    "connectors": {
+      "range": [40, 50],
+      "description": "90-degree turns, T-junctions, 4-way crosses for single hill (work with 23-27 extensions)"
+    }
+  },
+
+  "lake": {
+    "range": [1, 9],
+    "description": "When lakesrivers_path is set: tiles 1-9 in lakesrivers.aseprite. lake_map maps bitmask 0-15 to 1-based tile index.",
+    "_bitmask_reference": "Same as shoreline: N=1,E=2,S=4,W=8. 9=N+W, 3=N+E, 12=S+W, 6=S+E.",
+    "lake_map": {
+      "_comment": "N=1,E=2,S=4,W=8. Derived from lake_shoreline (51-59) minus 50 for lakesrivers.aseprite 1-9.",
+      "0": 1,
+      "1": 6,
+      "2": 8,
+      "3": 2,
+      "4": 7,
+      "5": 6,
+      "6": 3,
+      "7": 2,
+      "8": 9,
+      "9": 4,
+      "10": 8,
+      "11": 4,
+      "12": 5,
+      "13": 4,
+      "14": 3,
+      "15": 1
+    }
+  },
+
+  "river": {
+    "range": [10, 11],
+    "description": "When lakesrivers_path is set: tiles 10-11. Masks 5=N+S (vertical), 10=E+W (horizontal).",
+    "river_map": {
+      "5": 10,
+      "10": 11
+    }
+  },
+
+  "shoreline": {
+    "range": [1, 35],
+    "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
+    "_bitmask_reference": {
+      "0": "no water (interior)",
+      "1": "water N",
+      "2": "water E",
+      "3": "water N+E (top-right corner)",
+      "4": "water S",
+      "5": "water N+S (vertical edge)",
+      "6": "water S+E (bottom-right corner)",
+      "7": "water N+E+S (peninsula)",
+      "8": "water W",
+      "9": "water N+W (top-left corner)",
+      "10": "water E+W (horizontal edge)",
+      "11": "water N+E+W (peninsula)",
+      "12": "water S+W (bottom-left corner)",
+      "13": "water S+W+N (peninsula)",
+      "14": "water S+E+W (peninsula)",
+      "15": "water all sides (island)"
+    },
+    "shoreline_map": {
+      "0": 10,
+      "1": 2,
+      "2": 3,
+      "3": 4,
+      "4": 5,
+      "5": 6,
+      "6": 7,
+      "7": 8,
+      "8": 9,
+      "9": 10,
+      "10": 11,
+      "11": 16,
+      "12": 13,
+      "13": 16,
+      "14": 7,
+      "15": 13
+    }
+  },
+
+  "grass_tile_range": [1, 13],
+  "grass_shoreline_range": [98, 118],
+  "grass_shoreline_lake_range": [51, 59],
+  "grass_shoreline_extended_range": [114, 118],
+  "grass_shoreline_river_range": [60, 61],
+  "grass_shoreline": {
+    "_comment": "Bitmask N=1,E=2,S=4,W=8. When using grass.png for shoreline (no shoreline_path): tile indices 98-118. When shoreline_path set: use shoreline.shoreline_map instead.",
+    "0": 1,
+    "1": 101,
+    "2": 99,
+    "3": 100,
+    "4": 101,
+    "5": 101,
+    "6": 109,
+    "7": 113,
+    "8": 101,
+    "9": 98,
+    "10": 98,
+    "11": 113,
+    "12": 108,
+    "13": 113,
+    "14": 104,
+    "15": 1
+  },
+  "lake_shoreline": {
+    "0": 51,
+    "1": 56,
+    "2": 58,
+    "3": 52,
+    "4": 57,
+    "5": 56,
+    "6": 53,
+    "7": 52,
+    "8": 59,
+    "9": 54,
+    "10": 58,
+    "11": 54,
+    "12": 55,
+    "13": 54,
+    "14": 53,
+    "15": 51
+  },
+  "extended_shoreline_masks": [7, 11, 13, 14, 15],
+  "river_masks": [5, 10],
+  "interior_corner_masks": [3, 6, 9, 12]
+}

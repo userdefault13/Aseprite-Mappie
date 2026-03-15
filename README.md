@@ -23,13 +23,17 @@ Generate a new ASCII layout with:
 - Perlin-guided path shaping (`--path-perlin-scale`, `--path-perlin-weight`)
 - mines, shops, creep zones, and dead ends (`--mine-count`, `--shop-count`, `--creep-zone-count`, `--dead-end-count`)
 - optional single-path secret NPC branch (`--require-secret-npc-path`)
+- optional path hiding (`--hide-path`) — no path corridors; spawns and joins remain, terrain stays grass
+- **map mode**: `--map-mode island` (2-tile water border) or `--map-mode continent` (2-tile land-with-trees border)
 - optional visual preview output (`--preview-out`, `--preview-tile-size`)
 - optional auto-open preview in Aseprite (`--preview-in-aseprite`)
+- **layered preview** (default): terrain separated into layers (Water, Grass, Shoreline, Lake, River, Hill, Trees, Dirt, POI); use `--no-preview-layered` for flat BMP
+- **heightmap** for hills and shorelines: `--height-noise-scale`, `--hill-threshold`, `--beach-height-max` — hills only on high land; low land near water gets wider beaches
 
 ```bash
 python3 scripts/ascii_map_gen.py \
-  --width 96 \
-  --height 96 \
+  --width 128 \
+  --height 128 \
   --tree-density 0.22 \
   --forest-density 0.65 \
   --water-density 0.10 \
@@ -66,6 +70,37 @@ This writes:
 
 - `build/sample_room.csv`
 - `build/sample_room.tiled.json`
+
+### Export Tile Indices (JSON / CSV)
+
+Read tile indices from Tiled JSON tilemap layers and export in game-friendly formats:
+
+- **JSON** — Structured per-layer format, easy to parse in games (Unity, Godot, etc.)
+- **CSV** — Simple grid of numbers per layer, good for Unreal, custom engines, spreadsheets
+
+```bash
+python3 scripts/export_tilemap.py build/sample_room.tiled.json -o build/exported
+# Writes: build/exported.json, build/exported_Ground.csv (per layer)
+
+tilemap-app export build/sample_room.tiled.json -o build/exported
+# Same via tilemap-app
+
+# Options:
+#   --no-json     Skip JSON export
+#   --no-csv      Skip CSV export
+#   --csv-single  Export only first layer to one CSV file
+```
+
+### Aseprite Extension: Export Tiles Metadata
+
+Export tileset tiles and metadata (index, id, data, x, y) directly from Aseprite to JSON and CSV:
+
+```bash
+make extension-build
+# Creates build/export-tiles-metadata.aseprite-extension
+```
+
+Install via **Edit > Preferences > Extensions > Add Extension**, then use **File > Export Tiles Metadata** when a sprite is open. Supports both tileset-based sprites and frame-based spritesheets.
 
 ### Tree Logic (GotchiCraft-style)
 
@@ -104,15 +139,29 @@ tilemap-app tileset paint \
 ```
 
 - `--tile-size` — Pixels per cell (default 16).
+- `--export-map` / `--no-export-map` — Auto-generate JSON and CSV tile indices after painting (default: on). Writes `<out_stem>.tiled.json` and `<out_stem>.csv` next to the .aseprite file. Requires a legend file (`<ascii>.legend.json` or `--legend`).
 - With `--treeset`, trees are drawn on a separate **Trees** layer above **Ground** for easy editing.
-- `--treeset` — Path to tree tileset .aseprite (7×5 layout). Applies vertical-run and single-tree logic.
+- `--treeset` — Path to tree tileset .aseprite (7×5 layout). Default: `examples/trees.aseprite` if present.
 - `--legend` — Legend JSON (default: `<ascii>.legend.json`).
 - `--tree-seed` — RNG seed for tree variation.
-- `--grass-dir` — Grass tiles: directory with PNGs, or `.aseprite`/`.png` sheet. Picks randomly for G/./T/F cells. Requires `--treeset`.
-- `--water-tile` — Path to water tile PNG or `.aseprite` (uses first frame for animations). Requires `--treeset`.
-- `--dirt-tile` — Path to dirt tile PNG or `.aseprite` (for P=path cells). Requires `--treeset`. Defaults to `examples/dirt.aseprite`. For path autotiling, use a 4×4 tile sheet (16 tiles, 64×64 px for 16px tiles). Tiles are indexed by connectivity: N=1, E=2, S=4, W=8 (bitmask 0–15). See `examples/Bitmask references 1.png` and `examples/Bitmask references 2.png` for the tile layout reference. Single-tile fallback uses the same tile for all path cells.
+- `--grass-dir` — Grass tiles: directory with PNGs, or `.aseprite`/`.png` sheet. Default: `examples/grass.aseprite`.
+- `--water-tile` — Path to water tile PNG or `.aseprite` (uses first frame). Default: `examples/water.aseprite`.
+- `--dirt-tile` — Path to dirt tile PNG or `.aseprite` (for P=path cells). Default: `examples/dirt.aseprite`. Defaults to `examples/dirt.aseprite`. For path autotiling, use a 4×4 tile sheet (16 tiles, 64×64 px for 16px tiles). Tiles are indexed by connectivity: N=1, E=2, S=4, W=8 (bitmask 0–15). See `examples/Bitmask references 1.png` and `examples/Bitmask references 2.png` for the tile layout reference. Single-tile fallback uses the same tile for all path cells.
 
 **Tree painting (GotchiCraft-style):** When `--treeset` is used, Python/PIL composites grass and trees to PNGs, then Aseprite Lua loads them into layers. With `--grass-dir`, grass cells use random tile variants (e.g. Sprout Lands `Grass_tiles_v2_Mid`, `Grass_tiles_v2_Mid_Grass1`, etc.). Requires Pillow (`pip install Pillow`).
+
+**Extended grass shoreline (ocean, lake, river, peninsula):** The paint step uses water adjacency (N=1, E=2, S=4, W=8) to pick shoreline tiles. See `examples/Bitmask references 1.png` for the full layout.
+
+**Terrain config (centralized):** Use `--terrain-config examples/terrain.bitmask.json` to supply grass, water, dirt, trees paths, legend (char→tile_id), and bitmask settings from one file. The JSON can include `legend`, `grass_path`, `water_path`, `dirt_path`, `trees_path` (relative to config file) plus `grass_shoreline`, `lake_shoreline`, and tile ranges. Legend: `G` = grass interior (1-13), `B` = continent shoreline (98-118), `L` = lake shoreline (51-59), `R` = river bank (60-61), `I` = hill (14-50), `~` = shallow water, backtick = deep water, `T`/`F` = trees. Map generation (`map-gen`) uses the legend and enforces `_rules` (e.g. trees cannot be placed on shoreline tiles; shoreline cells use `B`) when `--terrain-config` is set; paint uses it for tree logic and tile resolution. Overrides `--grass-dir`, `--water-tile`, `--dirt-tile`, `--treeset`, `--grass-bitmask` when set.
+
+**Bitmask only:** Use `--grass-bitmask` to supply only shoreline mappings without path overrides.
+
+| Context | Range | Masks | Use |
+|---------|-------|-------|-----|
+| Ocean (continent border) | 1–15 | all | Water connected via NESW to 2-tile border; grass adjacent = B |
+| Lake (interior water) | 4–18 | all | Inland water (not connected to ocean); grass adjacent = L |
+| River banks | `--grass-shoreline-river-range` | 5 (N+S), 10 (E+W) | Water on opposite sides |
+| Peninsula/island | `--grass-shoreline-extended-range` | 7,11,13,14,15 | 3 or 4 sides water |
 
 ## Aseprite Workflow
 
@@ -244,8 +293,8 @@ tilemap-app
 # 1) Generate new ASCII map (prompts for all required values, and can auto-open preview in Aseprite)
 
 tilemap-app map-gen \
-  --width 96 \
-  --height 96 \
+  --width 128 \
+  --height 128 \
   --tree-density 0.22 \
   --forest-density 0.65 \
   --water-density 0.10 \
@@ -272,7 +321,7 @@ tilemap-app tileset init --legend maps/sample_room.legend.json --out assets/tile
 tilemap-app tileset terrain --legend maps/generated_map.legend.json --out assets/tilesets/generated_terrain.aseprite --tile-width 32 --tile-height 32 --cols 4 --export-dir build/tilesets
 
 # Dedicated generator command
-tilemap-mapgen --width 96 --height 96 --tree-density 0.22 --forest-density 0.65 --water-density 0.10 --spawn-count 8 --spawn-clearing-size 15 --path-width-threshold 3 --mine-count 4 --shop-count 3 --creep-zone-count 6 --dead-end-count 8 --preview-in-aseprite --require-secret-npc-path --out maps/generated_map.txt
+tilemap-mapgen --width 128 --height 128 --tree-density 0.22 --forest-density 0.65 --water-density 0.10 --spawn-count 8 --spawn-clearing-size 15 --path-width-threshold 3 --mine-count 4 --shop-count 3 --creep-zone-count 6 --dead-end-count 8 --preview-in-aseprite --require-secret-npc-path --out maps/generated_map.txt
 ```
 
 ## Input Format
