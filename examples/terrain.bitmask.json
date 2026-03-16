@@ -119,8 +119,24 @@
   },
 
   "shoreline": {
-    "range": [1, 35],
+    "range": [1, 41],
     "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
+    "inset_corner_tiles": {
+      "top_left": 36,
+      "top_right": 37,
+      "bottom_left": 38,
+      "bottom_right": 39
+    },
+    "inset_direct_corner_tiles": {
+      "top_left": 37,
+      "top_right": 36,
+      "bottom_left": 41,
+      "bottom_right": 40
+    },
+    "inset_edge_tiles": {
+      "right": 15,
+      "bottom": 33
+    },
     "_bitmask_reference": {
       "0": "no water (interior)",
       "1": "water N",
@@ -154,7 +170,7 @@
       "11": 16,
       "12": 13,
       "13": 16,
-      "14": 7,
+      "14": 15,
       "15": 13
     }
   },

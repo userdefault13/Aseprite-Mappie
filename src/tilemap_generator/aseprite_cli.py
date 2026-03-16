@@ -150,6 +150,8 @@ def command_paint(args: argparse.Namespace) -> None:
     lines = [ln.rstrip("\n\r") for ln in ascii_path.read_text(encoding="utf-8").splitlines()]
     if not lines:
         raise ValueError("ASCII map is empty")
+    export_ascii_path = ascii_path
+    export_ascii_temp: Path | None = None
 
     from tilemap_generator.paint_map_png import load_terrain_config
 
@@ -204,6 +206,7 @@ def command_paint(args: argparse.Namespace) -> None:
         )
 
         from tilemap_generator.paint_map_png import (
+            close_ocean_shoreline_gaps,
             export_treeset_to_png,
             paint_map_to_png,
         )
@@ -360,31 +363,19 @@ def command_paint(args: argparse.Namespace) -> None:
                     grass_json_candidate = grass_path_resolved.parent / (
                         grass_path_resolved.stem + ".json"
                     )
-                    # Prefer pre-exported grass.png when it exists (full tileset with shoreline 98-118)
-                    grass_png_candidate = grass_path_resolved.parent / (
-                        grass_path_resolved.stem + ".png"
+                    grass_sheet_path = tmp_path / "grass_sheet.png"
+                    export_treeset_to_png(
+                        grass_path_resolved,
+                        grass_sheet_path,
+                        aseprite_bin,
+                        sheet_columns=11,
+                        out_json=tmp_path / "grass_sheet.json",
                     )
-                    if grass_png_candidate.exists():
-                        grass_sheet_path = grass_png_candidate
-                        grass_json_path = (
-                            grass_json_candidate
-                            if grass_json_candidate.exists()
-                            else None
-                        )
-                    else:
-                        grass_sheet_path = tmp_path / "grass_sheet.png"
-                        export_treeset_to_png(
-                            grass_path_resolved,
-                            grass_sheet_path,
-                            aseprite_bin,
-                            sheet_columns=11,
-                            out_json=tmp_path / "grass_sheet.json",
-                        )
-                        grass_json_path = (
-                            grass_json_candidate
-                            if grass_json_candidate.exists()
-                            else tmp_path / "grass_sheet.json"
-                        )
+                    grass_json_path = (
+                        grass_json_candidate
+                        if grass_json_candidate.exists()
+                        else tmp_path / "grass_sheet.json"
+                    )
                 elif grass_path_resolved.suffix.lower() == ".png":
                     grass_sheet_path = grass_path_resolved
 
@@ -392,20 +383,14 @@ def command_paint(args: argparse.Namespace) -> None:
             shoreline_sheet_path: Path | None = None
             if shoreline_path_resolved:
                 if shoreline_path_resolved.suffix.lower() in (".aseprite", ".ase"):
-                    shoreline_png_candidate = shoreline_path_resolved.parent / (
-                        shoreline_path_resolved.stem + ".png"
+                    shoreline_sheet_path = tmp_path / "shorelines_sheet.png"
+                    # Use 5 columns to match common shoreline autotile layout (e.g. 5x7 = 35 tiles)
+                    export_treeset_to_png(
+                        shoreline_path_resolved,
+                        shoreline_sheet_path,
+                        aseprite_bin,
+                        sheet_columns=5,
                     )
-                    if shoreline_png_candidate.exists():
-                        shoreline_sheet_path = shoreline_png_candidate
-                    else:
-                        shoreline_sheet_path = tmp_path / "shorelines_sheet.png"
-                        # Use 5 columns to match common shoreline autotile layout (e.g. 5x7 = 35 tiles)
-                        export_treeset_to_png(
-                            shoreline_path_resolved,
-                            shoreline_sheet_path,
-                            aseprite_bin,
-                            sheet_columns=5,
-                        )
                 elif shoreline_path_resolved.suffix.lower() == ".png":
                     shoreline_sheet_path = shoreline_path_resolved
 
@@ -413,19 +398,13 @@ def command_paint(args: argparse.Namespace) -> None:
             lakesrivers_sheet_path: Path | None = None
             if lakesrivers_path_resolved:
                 if lakesrivers_path_resolved.suffix.lower() in (".aseprite", ".ase"):
-                    lr_png_candidate = lakesrivers_path_resolved.parent / (
-                        lakesrivers_path_resolved.stem + ".png"
+                    lakesrivers_sheet_path = tmp_path / "lakesrivers_sheet.png"
+                    export_treeset_to_png(
+                        lakesrivers_path_resolved,
+                        lakesrivers_sheet_path,
+                        aseprite_bin,
+                        sheet_columns=11,
                     )
-                    if lr_png_candidate.exists():
-                        lakesrivers_sheet_path = lr_png_candidate
-                    else:
-                        lakesrivers_sheet_path = tmp_path / "lakesrivers_sheet.png"
-                        export_treeset_to_png(
-                            lakesrivers_path_resolved,
-                            lakesrivers_sheet_path,
-                            aseprite_bin,
-                            sheet_columns=11,
-                        )
                 elif lakesrivers_path_resolved.suffix.lower() == ".png":
                     lakesrivers_sheet_path = lakesrivers_path_resolved
 
@@ -547,6 +526,17 @@ def command_paint(args: argparse.Namespace) -> None:
                 seed=args.tree_seed,
                 strict=getattr(args, "strict", False),
             )
+            closed_lines = close_ocean_shoreline_gaps(lines)
+            if closed_lines != lines:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    suffix=".txt",
+                    delete=False,
+                    encoding="utf-8",
+                ) as tmp_ascii:
+                    tmp_ascii.write("\n".join(closed_lines) + "\n")
+                    export_ascii_temp = Path(tmp_ascii.name)
+                    export_ascii_path = export_ascii_temp
 
             lua_script = PROJECT_ROOT / "assets/lua/paint_from_png.lua"
             if not lua_script.exists():
@@ -601,7 +591,7 @@ def command_paint(args: argparse.Namespace) -> None:
 
             out_prefix = out_path.with_suffix("")
             map_args = argparse.Namespace(
-                ascii_path=str(ascii_path),
+                ascii_path=str(export_ascii_path),
                 legend_path=str(legend_path),
                 tile_width=tile_size,
                 tile_height=tile_size,
@@ -617,6 +607,9 @@ def command_paint(args: argparse.Namespace) -> None:
                 map_cli.run_from_args(map_args)
             except Exception as e:
                 print(f"Warning: Could not export map JSON/CSV: {e}", file=sys.stderr)
+            finally:
+                if export_ascii_temp is not None and export_ascii_temp.exists():
+                    export_ascii_temp.unlink()
 
     if args.open:
         # Launch Aseprite in background so "All Done!" prompt appears immediately
