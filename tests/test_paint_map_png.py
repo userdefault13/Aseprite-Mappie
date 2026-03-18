@@ -5,8 +5,12 @@ from tilemap_generator.paint_map_png import (
     close_ocean_shoreline_gaps,
     count_adjacent_shoreline_cells,
     get_water_adjacency_with_type,
+    match_lake_shoreline_special_tile,
     match_ocean_inset_special_tile,
+    match_ocean_shoreline_special_tile,
     propagate_shore_masks,
+    resolve_center_ocean_inset_tile,
+    resolve_bottom_ocean_inset_tile,
 )
 
 
@@ -158,6 +162,82 @@ class PropagateShoreMasksTests(unittest.TestCase):
 
         self.assertEqual(tile, 40)
 
+    def test_bottom_inset_uses_left_variant_when_north_tile_is_10(self) -> None:
+        tile = resolve_bottom_ocean_inset_tile(
+            10,
+            edge_tiles={"bottom": 33},
+            direct_corner_tiles={"direct_bottom_left": 41, "direct_bottom_right": 40},
+        )
+
+        self.assertEqual(tile, 41)
+
+    def test_bottom_inset_uses_right_variant_when_north_tile_is_4(self) -> None:
+        tile = resolve_bottom_ocean_inset_tile(
+            4,
+            edge_tiles={"bottom": 33},
+            direct_corner_tiles={"direct_bottom_left": 41, "direct_bottom_right": 40},
+        )
+
+        self.assertEqual(tile, 40)
+
+    def test_center_inset_uses_tile_42_for_north_10_east_7(self) -> None:
+        tile = resolve_center_ocean_inset_tile(
+            10,
+            7,
+            edge_tiles={"center": 42},
+        )
+
+        self.assertEqual(tile, 42)
+
+    def test_explicit_shoreline_tee_west_uses_special_tile(self) -> None:
+        tile = match_ocean_shoreline_special_tile(
+            has_n=True,
+            has_e=True,
+            has_s=True,
+            has_w=False,
+            water_mask=8,
+            special_tiles={"tee_west": 32},
+        )
+
+        self.assertEqual(tile, 32)
+
+    def test_explicit_shoreline_west_water_vertical_uses_special_tile(self) -> None:
+        tile = match_ocean_shoreline_special_tile(
+            has_n=True,
+            has_e=False,
+            has_s=True,
+            has_w=False,
+            water_mask=8,
+            special_tiles={"lake_east": 9},
+        )
+
+        self.assertEqual(tile, 9)
+
+    def test_explicit_shoreline_tee_east_uses_special_tile(self) -> None:
+        tile = match_ocean_shoreline_special_tile(
+            has_n=True,
+            has_e=False,
+            has_s=True,
+            has_w=True,
+            water_mask=2,
+            special_tiles={"tee_east": 33},
+        )
+
+        self.assertEqual(tile, 33)
+
+    def test_explicit_lakebank_beach_west_uses_special_tile(self) -> None:
+        tile = match_lake_shoreline_special_tile(
+            has_n=False,
+            has_e=False,
+            has_s=False,
+            has_w=False,
+            water_mask=2,
+            special_tiles={"beach_west": 7},
+            has_w_beach=True,
+        )
+
+        self.assertEqual(tile, 7)
+
     def test_counts_adjacent_shoreline_cells(self) -> None:
         ascii_lines = [
             ".B.",
@@ -199,6 +279,33 @@ class PropagateShoreMasksTests(unittest.TestCase):
         closed = close_ocean_shoreline_gaps(ascii_lines)
 
         self.assertEqual(closed[1][0], "B")
+
+    def test_extends_coastal_shoreline_through_path_cells(self) -> None:
+        ascii_lines = [
+            "~B",
+            "~B",
+            "~P",
+            "~P",
+        ]
+
+        closed = close_ocean_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[2][1], "B")
+        self.assertEqual(closed[3][1], "B")
+
+    def test_all_ocean_adjacent_land_becomes_shoreline(self) -> None:
+        ascii_lines = [
+            "~~~~",
+            "~PGJ",
+            "~GGG",
+            "~~~~",
+        ]
+
+        closed = close_ocean_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[1][1], "B")
+        self.assertEqual(closed[1][3], "B")
+        self.assertEqual(closed[2][1], "B")
 
     def test_trims_landward_corner_from_2x2_shoreline_block(self) -> None:
         ascii_lines = [

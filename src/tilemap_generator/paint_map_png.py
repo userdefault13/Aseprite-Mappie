@@ -158,6 +158,69 @@ def match_ocean_inset_special_tile(
     return corner_tiles.get(pattern)
 
 
+def resolve_bottom_ocean_inset_tile(
+    north_tile: int | None,
+    edge_tiles: dict[str, int],
+    direct_corner_tiles: dict[str, int] | None = None,
+) -> int | None:
+    """Choose the bottom inset helper tile from the shoreline tile above it."""
+    if north_tile == 10 and direct_corner_tiles:
+        return direct_corner_tiles.get("direct_bottom_left", edge_tiles.get("bottom"))
+    if north_tile == 4 and direct_corner_tiles:
+        return direct_corner_tiles.get("direct_bottom_right", edge_tiles.get("bottom"))
+    return edge_tiles.get("bottom")
+
+
+def resolve_center_ocean_inset_tile(
+    north_tile: int | None,
+    east_tile: int | None,
+    edge_tiles: dict[str, int],
+) -> int | None:
+    """Choose the surrounded inset helper tile from neighboring shoreline tiles."""
+    if north_tile == 10 and east_tile == 7:
+        return edge_tiles.get("center")
+    return None
+
+
+def match_ocean_shoreline_special_tile(
+    has_n: bool,
+    has_e: bool,
+    has_s: bool,
+    has_w: bool,
+    water_mask: int,
+    special_tiles: dict[str, int],
+) -> int | None:
+    """Map explicit shoreline junctions to dedicated tiles."""
+    if water_mask == 8 and has_n and has_s and not has_e and not has_w:
+        return special_tiles.get("lake_east")
+    if water_mask == 8 and has_n and has_e and has_s and not has_w:
+        return special_tiles.get("tee_west")
+    if water_mask == 2 and has_n and has_s and has_w and not has_e:
+        return special_tiles.get("tee_east")
+    return None
+
+
+def match_lake_shoreline_special_tile(
+    has_n: bool,
+    has_e: bool,
+    has_s: bool,
+    has_w: bool,
+    water_mask: int,
+    special_tiles: dict[str, int],
+    *,
+    has_n_beach: bool = False,
+    has_e_beach: bool = False,
+    has_s_beach: bool = False,
+    has_w_beach: bool = False,
+) -> int | None:
+    """Map explicit lake shoreline junctions to dedicated lakesrivers tiles."""
+    if water_mask == 2 and has_w_beach and not has_e:
+        return special_tiles.get("beach_west")
+    if water_mask == 8 and has_n and has_s and has_e_beach and not has_w:
+        return special_tiles.get("beach_east")
+    return None
+
+
 def get_ocean_inset_pattern(
     has_n: bool,
     has_e: bool,
@@ -556,7 +619,7 @@ def count_adjacent_shoreline_cells(
 def close_ocean_shoreline_gaps(
     ascii_lines: list[str],
     shore_char: str = "B",
-    land_chars: frozenset[str] = frozenset("G.TF"),
+    land_chars: frozenset[str] = frozenset("G.PTF") | POI_CHARS,
     max_search_distance: int = 4,
     max_passes: int = 12,
 ) -> list[str]:
@@ -566,6 +629,8 @@ def close_ocean_shoreline_gaps(
     if width == 0 or height == 0:
         return ascii_lines
 
+    ocean_connected = _ocean_connected_water_cells(ascii_lines, width, height)
+
     shore_cells: set[tuple[int, int]] = set()
     for y in range(height):
         row = ascii_lines[y]
@@ -573,9 +638,6 @@ def close_ocean_shoreline_gaps(
             ch = row[x] if x < len(row) else "."
             if ch == shore_char:
                 shore_cells.add((x, y))
-
-    if not shore_cells:
-        return ascii_lines
 
     def _cell(px: int, py: int) -> str:
         if not (0 <= py < height and 0 <= px < width):
@@ -615,6 +677,13 @@ def close_ocean_shoreline_gaps(
             if _cell(nx, ny) in WATER_CHARS:
                 water_neighbors += 1
         return (shore_neighbors, water_neighbors)
+
+    def _adjacent_water_count(px: int, py: int) -> int:
+        count = 0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            if _cell(px + dx, py + dy) in WATER_CHARS:
+                count += 1
+        return count
 
     def _consider_best_candidate(
         best: tuple[tuple[int, int, int, int], tuple[int, int]] | None,
@@ -686,6 +755,19 @@ def close_ocean_shoreline_gaps(
                 if _shore_degree(cx, cy) >= 2:
                     best = _consider_best_candidate(best, cx, cy, 1, 1)
 
+            dirs = _shore_dirs(x, y)
+            if len(dirs) == 1:
+                only_dir = next(iter(dirs))
+                opposite = {
+                    "N": (0, 1),
+                    "E": (-1, 0),
+                    "S": (0, -1),
+                    "W": (1, 0),
+                }[only_dir]
+                cx, cy = x + opposite[0], y + opposite[1]
+                if _is_land_candidate(cx, cy) and _adjacent_water_count(cx, cy) > 0:
+                    best = _consider_best_candidate(best, cx, cy, 0, 1)
+
             if best is not None:
                 additions.add(best[1])
 
@@ -724,6 +806,20 @@ def close_ocean_shoreline_gaps(
         if removals:
             shore_cells -= removals
             changed = True
+
+    # Enforce the shoreline-band invariant: any non-water terrain directly
+    # adjacent to ocean-connected water must be shoreline.
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in shore_cells:
+                continue
+            ch = _cell(x, y)
+            if ch not in land_chars:
+                continue
+            for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                if (x + dx, y + dy) in ocean_connected:
+                    shore_cells.add((x, y))
+                    break
 
     if shore_cells == {
         (x, y)
@@ -1037,6 +1133,7 @@ def paint_map_to_png(
     shoreline_cfg = cfg.get("shoreline")
     shoreline_map: dict[int, int] | None = None
     shoreline_range: tuple[int, int] = (1, 21)
+    shoreline_special_tiles: dict[str, int] = {}
     shoreline_inset_edge_tiles: dict[str, int] = {}
     shoreline_inset_direct_corner_tiles: dict[str, int] = {}
     shoreline_inset_corner_tiles: dict[str, int] = {}
@@ -1047,6 +1144,14 @@ def paint_map_to_png(
         sr = shoreline_cfg.get("range")
         if isinstance(sr, (list, tuple)) and len(sr) >= 2:
             shoreline_range = (int(sr[0]), int(sr[1]))
+        special_tiles_cfg = shoreline_cfg.get("special_tiles")
+        if isinstance(special_tiles_cfg, dict):
+            for key in ("lake_east", "tee_west", "tee_east"):
+                try:
+                    if special_tiles_cfg.get(key) is not None:
+                        shoreline_special_tiles[key] = int(special_tiles_cfg[key])
+                except (TypeError, ValueError):
+                    continue
         inset_corner_cfg = shoreline_cfg.get("inset_corner_tiles")
         if isinstance(inset_corner_cfg, dict):
             for key in ("top_left", "top_right", "bottom_left", "bottom_right"):
@@ -1065,7 +1170,7 @@ def paint_map_to_png(
                     continue
         inset_edge_cfg = shoreline_cfg.get("inset_edge_tiles")
         if isinstance(inset_edge_cfg, dict):
-            for key in ("top", "right", "bottom", "left"):
+            for key in ("top", "right", "bottom", "left", "center"):
                 try:
                     if inset_edge_cfg.get(key) is not None:
                         shoreline_inset_edge_tiles[key] = int(inset_edge_cfg[key])
@@ -1076,11 +1181,15 @@ def paint_map_to_png(
     # When using lakesrivers.aseprite: optional direct bitmask->tile mapping
     lake_cfg = cfg.get("lake")
     lake_map_override: dict[int, int] | None = None
+    lake_special_tiles: dict[str, int] = {}
     lake_range_override: tuple[int, int] = (1, 9)
     if isinstance(lake_cfg, dict):
         _lm = _to_int_map(lake_cfg.get("lake_map"))
         if _lm:
             lake_map_override = _lm
+        _lst = _to_int_map(lake_cfg.get("special_tiles"))
+        if _lst:
+            lake_special_tiles = _lst
         lr = lake_cfg.get("range")
         if isinstance(lr, (list, tuple)) and len(lr) >= 2:
             lake_range_override = (int(lr[0]), int(lr[1]))
@@ -1332,6 +1441,30 @@ def paint_map_to_png(
         row = shore_ascii_lines[ay] if ay < len(shore_ascii_lines) else ""
         return row[ax] if ax < len(row) else "."
 
+    def _shoreline_sheet_tile_for_mask(mask: int) -> int:
+        if shoreline_map is not None:
+            return shoreline_map.get(mask, shoreline_range[0])
+        tile_idx = grass_shoreline_map.get(mask, grass_shoreline_range[0])
+        return (tile_idx - 97) if tile_idx >= 98 else tile_idx
+
+    def _get_ocean_shoreline_tile_index(ax: int, ay: int) -> int | None:
+        if _get_ascii_cell(ax, ay) != "B":
+            return None
+        base_mask = 0
+        if 0 <= ay < len(water_mask_grid) and 0 <= ax < len(water_mask_grid[ay]):
+            base_mask = water_mask_grid[ay][ax]
+        eff_mask = (
+            base_mask
+            if base_mask != 0
+            else shore_mask_grid[ay][ax]
+            if 0 <= ay < len(shore_mask_grid) and 0 <= ax < len(shore_mask_grid[ay])
+            else 0
+        )
+        eff_mask = _propagated_shore_mask(ax, ay, eff_mask)
+        if eff_mask == 0:
+            return None
+        return _shoreline_sheet_tile_for_mask(eff_mask)
+
     def _get_ocean_inset_special_tile(ax: int, ay: int, *, allow_shore_cell: bool = False) -> int | None:
         """Return a special ocean inset edge/corner shoreline tile for inland connector cells."""
         if not shoreline_inset_corner_tiles and not shoreline_inset_edge_tiles:
@@ -1352,6 +1485,12 @@ def paint_map_to_png(
         has_se = _get_ascii_cell(ax + 1, ay + 1) == "B"
         has_sw = _get_ascii_cell(ax - 1, ay + 1) == "B"
         has_nw = _get_ascii_cell(ax - 1, ay - 1) == "B"
+        if has_n and has_e and has_s and has_w:
+            return resolve_center_ocean_inset_tile(
+                _get_ocean_shoreline_tile_index(ax, ay - 1),
+                _get_ocean_shoreline_tile_index(ax + 1, ay),
+                shoreline_inset_edge_tiles,
+            )
         pattern = get_ocean_inset_pattern(
             has_n,
             has_e,
@@ -1366,6 +1505,12 @@ def paint_map_to_png(
             return None
         if not allow_shore_cell and _ocean_inset_notch_continues(ax, ay, pattern):
             return None
+        if pattern == "bottom":
+            return resolve_bottom_ocean_inset_tile(
+                _get_ocean_shoreline_tile_index(ax, ay - 1),
+                shoreline_inset_edge_tiles,
+                shoreline_inset_direct_corner_tiles,
+            )
         return match_ocean_inset_special_tile(
             has_n,
             has_e,
@@ -1476,7 +1621,6 @@ def paint_map_to_png(
                 adj_lake = _adjacent_to_lake_shoreline_cell(x, y)
                 explicit_shore = shore_ch in ("B", "L", "R")
                 inset_candidate = (ch in land_chars) and wmask == 0 and _adjacent_to_shoreline_cell(x, y)
-                shoreline_neighbor_count = count_adjacent_shoreline_cells(shore_ascii_lines, x, y)
                 use_shoreline = explicit_shore or inset_candidate
                 if (grass_shoreline or grass_shoreline_lake or grass_shoreline_river or grass_shoreline_extended) and use_shoreline:
                     # Direct coastlines use water adjacency; inland connectors infer from nearby shore cells.
@@ -1487,6 +1631,57 @@ def paint_map_to_png(
                         if explicit_shore and y < len(shore_mask_grid) and x < len(shore_mask_grid[y])
                         else _propagated_shore_mask(x, y, wmask)
                     )
+                    direct_shore_special_tile = None
+                    if shore_ch == "B" and shoreline_special_tiles:
+                        north_cell = _get_ascii_cell(x, y - 1)
+                        east_cell = _get_ascii_cell(x + 1, y)
+                        south_cell = _get_ascii_cell(x, y + 1)
+                        west_cell = _get_ascii_cell(x - 1, y)
+                        has_n = north_cell == "B"
+                        has_e = east_cell == "B"
+                        has_s = south_cell == "B"
+                        has_w = west_cell == "B"
+                        direct_shore_special_tile = match_ocean_shoreline_special_tile(
+                            has_n,
+                            has_e,
+                            has_s,
+                            has_w,
+                            eff_mask,
+                            shoreline_special_tiles,
+                        )
+                    if (
+                        direct_shore_special_tile is not None
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                    ):
+                        shore_start, shore_end = shoreline_range
+                        if shore_start <= direct_shore_special_tile <= shore_end:
+                            idx = direct_shore_special_tile - shore_start
+                            if 0 <= idx < len(grass_shoreline):
+                                return grass_shoreline[idx], True
+                    direct_lake_special_tile = None
+                    if ch == "L" and lake_special_tiles:
+                        north_raw = ascii_lines[y - 1][x] if y - 1 >= 0 and x < len(ascii_lines[y - 1]) else "."
+                        east_raw = ascii_lines[y][x + 1] if x + 1 < len(ascii_lines[y]) else "."
+                        south_raw = ascii_lines[y + 1][x] if y + 1 < height and x < len(ascii_lines[y + 1]) else "."
+                        west_raw = ascii_lines[y][x - 1] if x - 1 >= 0 else "."
+                        direct_lake_special_tile = match_lake_shoreline_special_tile(
+                            has_n=north_raw in ("L", "R"),
+                            has_e=east_raw in ("L", "R"),
+                            has_s=south_raw in ("L", "R"),
+                            has_w=west_raw in ("L", "R"),
+                            water_mask=eff_mask,
+                            special_tiles=lake_special_tiles,
+                            has_n_beach=north_raw == "B",
+                            has_e_beach=east_raw == "B",
+                            has_s_beach=south_raw == "B",
+                            has_w_beach=west_raw == "B",
+                        )
+                    if direct_lake_special_tile is not None and grass_shoreline_lake:
+                        if lakesrivers_sheet_path and lake_range_override[0] <= direct_lake_special_tile <= lake_range_override[1]:
+                            idx = direct_lake_special_tile - lake_range_override[0]
+                            if 0 <= idx < len(grass_shoreline_lake):
+                                return grass_shoreline_lake[idx], True
                     special_inset_corner_tile = None
                     if inset_candidate or (explicit_shore and wmask == 0):
                         special_inset_corner_tile = _get_ocean_inset_special_tile(
@@ -1504,16 +1699,14 @@ def paint_map_to_png(
                             idx = special_inset_corner_tile - shore_start
                             if 0 <= idx < len(grass_shoreline):
                                 return grass_shoreline[idx], True
-                    if inset_candidate and not adj_lake and shoreline_neighbor_count < 2:
-                        return _pick_interior_grass(), False
-                    if inset_candidate and eff_mask not in interior_corner_masks:
+                    if inset_candidate:
                         return _pick_interior_grass(), False
                     if eff_mask == 0 and (explicit_shore or inset_candidate):
                         eff_mask = 1
                     if eff_mask == 0:
                         return None, False
                     # L = lake shoreline: use lake tiles if available, else continent (inlets need shoreline too)
-                    if (ch == "L" or adj_lake) and grass_shoreline_lake:
+                    if (ch == "L" or (adj_lake and ch != "B")) and grass_shoreline_lake:
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]
@@ -1554,7 +1747,7 @@ def paint_map_to_png(
                         if 0 <= riv_idx < len(grass_shoreline_river):
                             return grass_shoreline_river[riv_idx], True
                     # Interior shore corners (3,6,9,12): use 4,6,16,18 for lakes only (L or G/./P adjacent to lake)
-                    if (ch == "L" or is_lake or adj_lake) and eff_mask in interior_corner_masks and grass_shoreline_lake:
+                    if (ch == "L" or is_lake or (adj_lake and ch != "B")) and eff_mask in interior_corner_masks and grass_shoreline_lake:
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]
@@ -1565,7 +1758,7 @@ def paint_map_to_png(
                             idx = tile_idx - lake_start
                             if 0 <= idx < len(grass_shoreline_lake):
                                 return grass_shoreline_lake[idx], True
-                    if (is_lake or adj_lake) and grass_shoreline_lake:
+                    if (is_lake or (adj_lake and ch != "B")) and grass_shoreline_lake:
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]

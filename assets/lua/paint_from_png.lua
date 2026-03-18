@@ -1,4 +1,4 @@
--- Build layered .aseprite (layer order: WaterDeep, WaterShallow, WaterLake, WaterRiver, Grass, Shoreline, LakeBank, Hill, Dirt, Trees, POI, ...).
+-- Build layered .aseprite (layer order: WaterDeep, WaterShallow, WaterLake, WaterRiver, Grass, LakeBank, Shoreline, Hill, Dirt, Trees, POI, ...).
 -- Env: OUT, WATER_PNG, WATER_SHALLOW_PNG, WATER_DEEP_PNG, WATER_LAKE_PNG, WATER_RIVER_PNG, GRASS_PNG, SHORELINE_PNG, LAKEBANK_PNG, ...
 local outPath = os.getenv("OUT")
 local waterPath = os.getenv("WATER_PNG")
@@ -89,19 +89,7 @@ local grassLayer = sprite:newLayer()
 grassLayer.name = "Grass"
 sprite:newCel(grassLayer, 1, grassImg, Point(0, 0))
 
--- Layer 6: Shoreline (ocean/land adjacent tiles only)
-local shorelineLayer = sprite:newLayer()
-shorelineLayer.name = "Shoreline"
-local shorelineImg
-if shorelinePath and shorelinePath ~= "" then
-  shorelineImg = Image{ fromFile = shorelinePath }
-else
-  shorelineImg = Image(w, h, ColorMode.RGBA)
-  shorelineImg:clear(0)
-end
-sprite:newCel(shorelineLayer, 1, shorelineImg, Point(0, 0))
-
--- Layer 7: LakeBank (lake/river and land adjacent tiles only)
+-- Layer 6: LakeBank (lake/river and land adjacent tiles only)
 local lakebankLayer = sprite:newLayer()
 lakebankLayer.name = "LakeBank"
 local lakebankImg
@@ -112,6 +100,18 @@ else
   lakebankImg:clear(0)
 end
 sprite:newCel(lakebankLayer, 1, lakebankImg, Point(0, 0))
+
+-- Layer 7: Shoreline (ocean/land adjacent tiles only)
+local shorelineLayer = sprite:newLayer()
+shorelineLayer.name = "Shoreline"
+local shorelineImg
+if shorelinePath and shorelinePath ~= "" then
+  shorelineImg = Image{ fromFile = shorelinePath }
+else
+  shorelineImg = Image(w, h, ColorMode.RGBA)
+  shorelineImg:clear(0)
+end
+sprite:newCel(shorelineLayer, 1, shorelineImg, Point(0, 0))
 
 -- Layer 8+: Hill, Dirt, Trees, POI...
 local hillLayer = sprite:newLayer()
