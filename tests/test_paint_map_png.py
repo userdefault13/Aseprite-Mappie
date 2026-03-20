@@ -371,6 +371,18 @@ class CloseLakeShorelineGapsTests(unittest.TestCase):
         self.assertEqual(closed[1][0], "L")
         self.assertEqual(closed[1][2], "L")
 
+    def test_does_not_promote_interior_lake_center(self) -> None:
+        """Center of 3x3 lake (water with L on all 4 sides) must stay water, not become L."""
+        ascii_lines = [
+            "LLL",
+            "L~L",
+            "LLL",
+        ]
+
+        closed = close_lake_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[1][1], "~", "Center must remain water, not be promoted to L")
+
 
 class FilterIsolatedLakeShorelineTests(unittest.TestCase):
     """Lake outline rule: L needs at least 2 NESW lake neighbors (water or L) to avoid diagonals."""

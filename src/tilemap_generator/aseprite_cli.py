@@ -206,6 +206,7 @@ def command_paint(args: argparse.Namespace) -> None:
         )
 
         from tilemap_generator.paint_map_png import (
+            WATER_CHAR,
             close_ocean_shoreline_gaps,
             close_lake_shoreline_gaps,
             export_treeset_to_png,
@@ -529,7 +530,9 @@ def command_paint(args: argparse.Namespace) -> None:
                 strict=getattr(args, "strict", False),
             )
             closed_lines = close_ocean_shoreline_gaps(lines)
-            closed_lines = close_lake_shoreline_gaps(closed_lines)
+            closed_lines = close_lake_shoreline_gaps(
+                closed_lines, water_chars=frozenset([WATER_CHAR])
+            )
             closed_lines = filter_isolated_lake_shoreline(closed_lines)
             if closed_lines != lines:
                 with tempfile.NamedTemporaryFile(

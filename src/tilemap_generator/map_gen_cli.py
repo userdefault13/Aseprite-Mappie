@@ -364,18 +364,24 @@ def ocean_connected_water_cells(
     return ocean_connected
 
 
+# Join and POI chars: never place on shoreline (B/L/R)
+POI_SHORELINE_EXCLUDE = frozenset({SPAWN_CHAR, JOIN_CHAR, MINE_CHAR, SHOP_CHAR, CREEP_CHAR, DEAD_END_CHAR, SECRET_NPC_CHAR})
+
+
 def continent_shoreline_cells(
     grid: list[list[str]],
     width: int,
     height: int,
     water_border_width: int = 0,
     ocean_connected: set[Point] | None = None,
+    exclude: set[Point] | None = None,
 ) -> set[Point]:
     """Grass adjacent to ocean (map edge or water connected to ocean via NESW). Sets B."""
+    exclude = exclude or set()
     out: set[Point] = set()
     for y in range(height):
         for x in range(width):
-            if grid[y][x] != GRASS_CHAR:
+            if grid[y][x] != GRASS_CHAR or (x, y) in exclude:
                 continue
             # Adjacent to map edge (out-of-bounds ocean)
             if (
@@ -416,11 +422,24 @@ def lake_shoreline_cells(
     return out
 
 
-def mark_deep_water(grid: list[list[str]], width: int, height: int) -> None:
-    """Convert water cells with 4 water neighbors to deep water (`). Mutates grid."""
+LAND_CHARS = frozenset({GRASS_CHAR, "."})
+
+
+def mark_deep_water(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    ocean_connected: set[Point] | None = None,
+) -> None:
+    """Convert LAKE water cells (not ocean) with 4 water neighbors to deep water (`).
+    Deep water must have min 1-tile shallow border: demote any ` adjacent to land to ~."""
+    if ocean_connected is None:
+        ocean_connected = set()
     for y in range(height):
         for x in range(width):
             if grid[y][x] != WATER_CHAR:
+                continue
+            if (x, y) in ocean_connected:
                 continue
             n_water = sum(
                 1
@@ -429,6 +448,20 @@ def mark_deep_water(grid: list[list[str]], width: int, height: int) -> None:
             )
             if n_water == 4:
                 grid[y][x] = DEEP_WATER_CHAR
+    # Ensure min 1-tile shallow border: demote deep water adjacent to land
+    changed = True
+    while changed:
+        changed = False
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x] != DEEP_WATER_CHAR:
+                    continue
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if grid[ny][nx] in LAND_CHARS:
+                            grid[y][x] = WATER_CHAR
+                            changed = True
+                            break
 
 
 def river_water_cells(grid: list[list[str]], width: int, height: int) -> set[Point]:
@@ -751,8 +784,10 @@ def expand_shoreline_by_height(
     height: int,
     beach_height_max: float,
     max_depth: int = 0,
+    exclude: set[Point] | None = None,
 ) -> set[Point]:
     """Expand shoreline inward where land height is low. max_depth=0: only 1 tile (no expansion)."""
+    exclude = exclude or set()
     expanded = set(shore_cells)
     frontier = list(shore_cells)
     depth = 0
@@ -760,7 +795,7 @@ def expand_shoreline_by_height(
         next_frontier: list[Point] = []
         for x, y in frontier:
             for nx, ny in neighbors4(x, y, width, height):
-                if (nx, ny) in expanded:
+                if (nx, ny) in expanded or (nx, ny) in exclude:
                     continue
                 if grid[ny][nx] != GRASS_CHAR:
                     continue
@@ -1459,7 +1494,11 @@ def run_from_args(args: argparse.Namespace) -> None:
             protected=terrain_blocked,
             iterations=erode_iterations,
         )
-    mark_deep_water(grid, args.width, args.height)
+    map_mode = getattr(args, "map_mode", "island")
+    is_island = map_mode == "island"
+    water_border = max(0, args.water_border_width) if is_island else 0
+    ocean_connected = ocean_connected_water_cells(grid, args.width, args.height, water_border)
+    mark_deep_water(grid, args.width, args.height, ocean_connected)
 
     heightmap = generate_heightmap(
         args.width, args.height,
@@ -1467,24 +1506,22 @@ def run_from_args(args: argparse.Namespace) -> None:
         getattr(args, "height_noise_scale", 12.0),
     )
 
-    map_mode = getattr(args, "map_mode", "island")
-    is_island = map_mode == "island"
-    water_border = max(0, args.water_border_width) if is_island else 0
-    ocean_connected = ocean_connected_water_cells(grid, args.width, args.height, water_border)
+    poi_protected = set(spawn_points) | set(join_points)
     continent_shore = continent_shoreline_cells(
         grid, args.width, args.height,
         water_border_width=water_border,
         ocean_connected=ocean_connected,
+        exclude=poi_protected,
     )
     lake_shore = lake_shoreline_cells(
         grid, args.width, args.height,
-        exclude=continent_shore,
+        exclude=continent_shore | poi_protected,
         ocean_connected=ocean_connected,
     )
     river_cells = river_water_cells(grid, args.width, args.height)
     river_bank = river_bank_cells(
         grid, args.width, args.height, river_cells,
-        exclude=continent_shore | lake_shore,
+        exclude=continent_shore | lake_shore | poi_protected,
         ocean_connected=ocean_connected,
     )
     beach_height_max = getattr(args, "beach_height_max", 0.45)
@@ -1492,24 +1529,30 @@ def run_from_args(args: argparse.Namespace) -> None:
     continent_shore = expand_shoreline_by_height(
         continent_shore, heightmap, grid, args.width, args.height, beach_height_max,
         max_depth=shoreline_expand_depth,
+        exclude=poi_protected,
     )
     lake_shore = expand_shoreline_by_height(
         lake_shore, heightmap, grid, args.width, args.height, beach_height_max,
         max_depth=shoreline_expand_depth,
+        exclude=poi_protected,
     )
     lake_shore = lake_shore - continent_shore
     river_bank = expand_shoreline_by_height(
         river_bank, heightmap, grid, args.width, args.height, beach_height_max,
         max_depth=shoreline_expand_depth,
+        exclude=poi_protected,
     )
     river_bank = river_bank - continent_shore - lake_shore
 
     for x, y in continent_shore:
-        grid[y][x] = SHORELINE_CHAR
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+            grid[y][x] = SHORELINE_CHAR
     for x, y in lake_shore:
-        grid[y][x] = LAKE_SHORELINE_CHAR
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+            grid[y][x] = LAKE_SHORELINE_CHAR
     for x, y in river_bank:
-        grid[y][x] = RIVER_CHAR
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+            grid[y][x] = RIVER_CHAR
 
     _land_chars = frozenset({GRASS_CHAR, "."})
     for _ in range(2):
@@ -1517,6 +1560,8 @@ def run_from_args(args: argparse.Namespace) -> None:
         for y in range(args.height):
             for x in range(args.width):
                 if grid[y][x] not in _land_chars:
+                    continue
+                if (x, y) in poi_protected:
                     continue
                 if (x, y) in continent_shore or (x, y) in lake_shore or (x, y) in river_bank:
                     continue
@@ -1529,11 +1574,13 @@ def run_from_args(args: argparse.Namespace) -> None:
                         break
         for x, y in added_continent:
             continent_shore.add((x, y))
-            grid[y][x] = SHORELINE_CHAR
+            if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                grid[y][x] = SHORELINE_CHAR
         for x, y in added_lake:
             if (x, y) not in continent_shore:
                 lake_shore.add((x, y))
-                grid[y][x] = LAKE_SHORELINE_CHAR
+                if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                    grid[y][x] = LAKE_SHORELINE_CHAR
         if not added_continent and not added_lake:
             break
 
@@ -1684,7 +1731,12 @@ def run_from_args(args: argparse.Namespace) -> None:
                 break
 
     terrain_blocked = protected_cells | set(path_cells)
-    vegetation_blocked = terrain_blocked | continent_shore | lake_shore | river_bank
+    water_cells = {
+        (x, y)
+        for x, y in all_positions(args.width, args.height)
+        if grid[y][x] in WATER_CHARS
+    }
+    vegetation_blocked = terrain_blocked | water_cells | continent_shore | lake_shore | river_bank
     shoreline_blocked = continent_shore | lake_shore | river_bank
 
     # Hills (I) on remaining grass, only where height > hill_threshold
