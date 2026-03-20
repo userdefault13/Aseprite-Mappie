@@ -1072,10 +1072,10 @@ def filter_isolated_lake_shoreline(
     ascii_lines: list[str],
     shore_char: str = "L",
     lake_chars: frozenset[str] | None = None,
-    min_lake_neighbors: int = 2,
+    min_lake_neighbors: int = 1,
 ) -> list[str]:
     """Demote L cells with fewer than min_lake_neighbors NESW lake neighbors to G.
-    Lake neighbors = water (~, `) or L. Helps avoid diagonal-looking lake outlines."""
+    Lake neighbors = water (~, `) or L. min=1 preserves single-edge shorelines (S, E, W banks)."""
     if lake_chars is None:
         lake_chars = WATER_CHARS | frozenset({shore_char})
     height = len(ascii_lines)
@@ -1887,6 +1887,26 @@ def paint_map_to_png(
 
             skip_dirt = _within_1_of_shoreline(x, y)
 
+            # Land with 3+ water neighbors: treat as water (water already pasted), skip grass
+            # Prevents grass from being painted on water tiles
+            def _water_neighbor_count(px: int, py: int) -> int:
+                count = 0
+                for ddx, ddy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+                    nx, ny = px + ddx, py + ddy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        r = ascii_lines[ny] if ny < len(ascii_lines) else ""
+                        nc = r[nx] if nx < len(r) else "."
+                        if nc in LAKE_WATER_CHARS:
+                            count += 1
+                return count
+
+            _water_count = _water_neighbor_count(x, y)
+            is_land_surrounded_by_water = (
+                (ch in ("G", ".", "P", "T", "F") or ch in POI_CHARS)
+                and (x, y) not in ocean_connected
+                and _water_count >= 3
+            )
+
             if water_shallow is not None:
                 if ch in WATER_CHARS:
                     wt = water_deep if ch == DEEP_WATER_CHAR else water_shallow
@@ -1917,6 +1937,35 @@ def paint_map_to_png(
                             _paste_water(water_shallow_layer, water_shallow, dx, dy)
                         else:
                             _paste_water(water_lake_layer, water_shallow, dx, dy)
+                # Shallow water with N=deep, E=shallow, S=land, W=shallow: use tile 6 (deep-to-land transition)
+                if (
+                    ch == WATER_CHAR
+                    and (x, y) not in ocean_connected
+                    and lakebank_layer
+                    and grass_shoreline_lake
+                    and lake_special_tiles
+                ):
+                    def _raw_cell(px: int, py: int) -> str:
+                        if not (0 <= py < height and 0 <= px < width):
+                            return "."
+                        r = ascii_lines[py] if py < len(ascii_lines) else ""
+                        return r[px] if px < len(r) else "."
+                    n_raw = _raw_cell(x, y - 1)
+                    e_raw = _raw_cell(x + 1, y)
+                    s_raw = _raw_cell(x, y + 1)
+                    w_raw = _raw_cell(x - 1, y)
+                    deep_n_shallow_ew_land_s = lake_special_tiles.get("deep_n_shallow_ew_land_s")
+                    if (
+                        deep_n_shallow_ew_land_s is not None
+                        and n_raw == DEEP_WATER_CHAR
+                        and e_raw == WATER_CHAR
+                        and s_raw not in WATER_CHARS
+                        and w_raw == WATER_CHAR
+                    ):
+                        if lake_load_range[0] <= deep_n_shallow_ew_land_s <= lake_load_range[1]:
+                            idx = deep_n_shallow_ew_land_s - lake_load_range[0]
+                            if 0 <= idx < len(grass_shoreline_lake):
+                                lakebank_layer.paste(grass_shoreline_lake[idx], (dx, dy))
             # Grass layer: shoreline tiles for water-adjacent land, explicit B/L/R, and inset connectors.
             def _pick_grass_tile() -> tuple[Any, bool]:
                 """Returns (tile, is_shoreline). is_shoreline=True when tile is from shoreline set."""
@@ -2152,13 +2201,13 @@ def paint_map_to_png(
                         # Fallback: use first river tile
                         if grass_shoreline_river:
                             return grass_shoreline_river[0], True
-                    # Extended: peninsula (7,11,13,14) or isolated island (15)
-                    if grass_shoreline_extended and eff_mask in extended_masks:
+                    # Extended: peninsula (7,11,13,14) or isolated island (15) - B uses shoreline.aseprite
+                    if shore_ch != "B" and grass_shoreline_extended and eff_mask in extended_masks:
                         ext_idx = extended_masks.index(eff_mask)
                         if ext_idx < len(grass_shoreline_extended):
                             return grass_shoreline_extended[ext_idx], True
-                    # River banks: water on opposite sides (5=N+S, 10=E+W)
-                    if grass_shoreline_river and eff_mask in river_masks:
+                    # River banks: water on opposite sides (5=N+S, 10=E+W) - R only, B uses shoreline.aseprite
+                    if shore_ch != "B" and grass_shoreline_river and eff_mask in river_masks:
                         if lakesrivers_sheet_path and river_map_override is not None:
                             tile_idx = river_map_override.get(eff_mask, river_range_override[0])
                             riv_idx = tile_idx - river_range_override[0]
@@ -2167,7 +2216,8 @@ def paint_map_to_png(
                         if 0 <= riv_idx < len(grass_shoreline_river):
                             return grass_shoreline_river[riv_idx], True
                     # Interior shore corners (3,6,9,12): use 4,6,16,18 for lakes only (L or G/./P adjacent to lake)
-                    if (ch == "L" or is_lake or (adj_lake and ch != "B")) and eff_mask in interior_corner_masks and grass_shoreline_lake:
+                    # B = beach: always use shoreline.aseprite, never lakesrivers
+                    if shore_ch != "B" and (ch == "L" or is_lake or (adj_lake and ch != "B")) and eff_mask in interior_corner_masks and grass_shoreline_lake:
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]
@@ -2178,7 +2228,7 @@ def paint_map_to_png(
                             idx = tile_idx - lake_start
                             if 0 <= idx < len(grass_shoreline_lake):
                                 return grass_shoreline_lake[idx], True
-                    if (is_lake or (adj_lake and ch != "B")) and grass_shoreline_lake:
+                    if shore_ch != "B" and (is_lake or (adj_lake and ch != "B")) and grass_shoreline_lake:
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]
@@ -2277,7 +2327,10 @@ def paint_map_to_png(
                     # No shoreline output: use grass layer so B/L/R still render (fallback color)
                     _paste_visible(grass_layer, tile, fallback_rgb, color_tiles)
 
-            if ch == "I" and grass_imgs:
+            if is_land_surrounded_by_water:
+                # Water already pasted; skip grass/trees/dirt/POI (avoids grass painted over water)
+                pass
+            elif ch == "I" and grass_imgs:
                 is_shore = False
                 # Paint grass underneath so hiding hill layer shows grass
                 grass_tile = _pick_interior_grass()
@@ -2399,13 +2452,13 @@ def paint_map_to_png(
                 grass_layer.paste(color_tiles[rgb], (dx, dy))
 
             # Dirt layer: P cells only, no dirt on ocean-adjacent tiles (reserve for shoreline)
-            if ch == "P" and dirt_tiles and not skip_dirt:
+            if not is_land_surrounded_by_water and ch == "P" and dirt_tiles and not skip_dirt:
                 bitmask = get_path_bitmask(ascii_lines, x, y)
                 idx = min(bitmask, len(dirt_tiles) - 1)
                 _paste_visible(dirt_layer, dirt_tiles[idx], SOLID_TILE_COLORS["P"], color_tiles)
 
             # Trees layer: T, F cells (skip on water and shoreline B/L/R per terrain rules)
-            if ch in ("T", "F") and not is_pure_water and shore_ch not in ("B", "L", "R"):
+            if not is_land_surrounded_by_water and ch in ("T", "F") and not is_pure_water and shore_ch not in ("B", "L", "R"):
                 tile_id = tile_rows[y][x] if y < len(tile_rows) and x < len(tile_rows[y]) else 0
                 if tile_id and tile_id > 0:
                     idx = tile_id - 1

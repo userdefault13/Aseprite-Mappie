@@ -92,10 +92,11 @@
 
   "lake": {
     "range": [1, 9],
-    "description": "When lakesrivers_path is set: tiles 1-9 in lakesrivers.aseprite. lake_map maps bitmask 0-15 to 1-based tile index. special_tiles (e.g. south_of_n_edge: 49) extend the load range. interior_lake_tiles [49,50,51,52] for L cells in interior clusters (mask 15 with 2+ interior neighbors).",
+    "description": "When lakesrivers_path is set: tiles 1-9 in lakesrivers.aseprite. lake_map maps bitmask 0-15 to 1-based tile index. special_tiles: south_of_n_edge (49), deep_n_shallow_ew_land_s (6 for ~ with N=deep,E=~,S=land,W=~). interior_lake_tiles [49,50,51,52] for L cells in interior clusters.",
     "special_tiles": {
       "beach_west": 7,
-      "south_of_n_edge": 49
+      "south_of_n_edge": 49,
+      "deep_n_shallow_ew_land_s": 6
     },
     "interior_lake_tiles": [49, 50, 51, 52],
     "_interior_cases": "1: NESW all water (L/R/~/`) -> blank. 2: N(tile3)+W(tile3)->49. 3: S(tile2)+W(tile2)->51. 4: N(tile5)+E(tile5)->50. 5: E(tile4)+S(tile4)->52. 6: 3+ lake neighbors + shallow water neighbor -> blank. tile2=mask3, tile3=mask6, tile4=mask9, tile5=mask12.",
@@ -184,7 +185,7 @@
       "7": 8,
       "8": 9,
       "9": 10,
-      "10": 11,
+      "10": 3,
       "11": 16,
       "12": 13,
       "13": 16,
