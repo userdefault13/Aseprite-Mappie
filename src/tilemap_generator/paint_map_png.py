@@ -82,6 +82,8 @@ PATH_CHARS = frozenset("P")
 WATER_CHAR = "~"
 DEEP_WATER_CHAR = "`"
 WATER_CHARS = frozenset([WATER_CHAR, DEEP_WATER_CHAR])
+# For lake shoreline bitmask: L/R count as water (they're part of the lake edge)
+LAKE_WATER_CHARS = WATER_CHARS | frozenset("LR")
 
 # POI chars: spawn, join, mine, shop, creep, dead end, secret NPC
 POI_CHARS = frozenset("SJMHCDN")
@@ -516,6 +518,51 @@ def _river_water_cells(
     return out
 
 
+def _lake_mask_with_diagonal_inference(
+    ascii_lines: list[str],
+    x: int,
+    y: int,
+    base_mask: int,
+    water_chars: frozenset[str] = WATER_CHARS,
+) -> int:
+    """Upgrade single-edge lake mask to corner when diagonal neighbor is water.
+    E.g. mask 1 (N) + NE water -> mask 3 (N+E corner) for tile 2."""
+    if base_mask not in (1, 2, 4, 8):
+        return base_mask
+    height = len(ascii_lines)
+    width = max((len(row) for row in ascii_lines), default=0)
+
+    def _is_water(px: int, py: int) -> bool:
+        if not (0 <= px < width and 0 <= py < height):
+            return False
+        row = ascii_lines[py]
+        ch = row[px] if px < len(row) else "."
+        return ch in water_chars
+
+    upgraded = base_mask
+    if base_mask == 1:  # N
+        if _is_water(x + 1, y - 1):
+            upgraded = 3  # N+E corner
+        elif _is_water(x - 1, y - 1):
+            upgraded = 9  # N+W corner
+    elif base_mask == 2:  # E
+        if _is_water(x + 1, y - 1):
+            upgraded = 3  # N+E corner
+        elif _is_water(x + 1, y + 1):
+            upgraded = 6  # S+E corner
+    elif base_mask == 4:  # S
+        if _is_water(x + 1, y + 1):
+            upgraded = 6  # S+E corner
+        elif _is_water(x - 1, y + 1):
+            upgraded = 12  # S+W corner
+    elif base_mask == 8:  # W
+        if _is_water(x - 1, y - 1):
+            upgraded = 9  # N+W corner
+        elif _is_water(x - 1, y + 1):
+            upgraded = 12  # S+W corner
+    return upgraded
+
+
 def get_water_adjacency_bitmask(
     ascii_lines: list[str],
     x: int,
@@ -840,6 +887,221 @@ def close_ocean_shoreline_gaps(
             if new_lines[y][x] == shore_char and (x, y) not in shore_cells:
                 new_lines[y][x] = "G"
     return ["".join(row) for row in new_lines]
+
+
+def close_lake_shoreline_gaps(
+    ascii_lines: list[str],
+    shore_char: str = "L",
+    water_chars: frozenset[str] = WATER_CHARS,
+    max_search_distance: int = 4,
+    max_passes: int = 12,
+) -> list[str]:
+    """Promote water cells between L (lake shoreline) segments to L so the shoreline path is continuous via NESW."""
+    height = len(ascii_lines)
+    width = max((len(row) for row in ascii_lines), default=0)
+    if width == 0 or height == 0:
+        return ascii_lines
+
+    shore_cells: set[tuple[int, int]] = set()
+    for y in range(height):
+        row = ascii_lines[y]
+        for x in range(width):
+            ch = row[x] if x < len(row) else "."
+            if ch == shore_char:
+                shore_cells.add((x, y))
+
+    def _cell(px: int, py: int) -> str:
+        if not (0 <= py < height and 0 <= px < width):
+            return "."
+        row = ascii_lines[py] if py < len(ascii_lines) else ""
+        return row[px] if px < len(row) else "."
+
+    def _is_water_candidate(px: int, py: int) -> bool:
+        return _cell(px, py) in water_chars and (px, py) not in shore_cells
+
+    def _shore_degree(px: int, py: int) -> int:
+        count = 0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            if (px + dx, py + dy) in shore_cells:
+                count += 1
+        return count
+
+    def _shore_dirs(px: int, py: int) -> set[str]:
+        dirs: set[str] = set()
+        for name, dx, dy in (("N", 0, -1), ("E", 1, 0), ("S", 0, 1), ("W", -1, 0)):
+            if (px + dx, py + dy) in shore_cells:
+                dirs.add(name)
+        return dirs
+
+    def _candidate_score(px: int, py: int) -> tuple[int, int]:
+        shore_neighbors = 0
+        water_neighbors = 0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            nx, ny = px + dx, py + dy
+            if (nx, ny) in shore_cells:
+                shore_neighbors += 1
+            if _cell(nx, ny) in water_chars:
+                water_neighbors += 1
+        return (shore_neighbors, water_neighbors)
+
+    def _adjacent_shore_count(px: int, py: int) -> int:
+        count = 0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            if (px + dx, py + dy) in shore_cells:
+                count += 1
+        return count
+
+    def _consider_best_candidate(
+        best: tuple[tuple[int, int, int, int], tuple[int, int]] | None,
+        px: int,
+        py: int,
+        tier: int,
+        distance: int,
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int]] | None:
+        shore_neighbors, water_neighbors = _candidate_score(px, py)
+        score = (tier, shore_neighbors, water_neighbors, -distance)
+        ranked = (score, (px, py))
+        if best is None or ranked[0] > best[0]:
+            return ranked
+        return best
+
+    for _ in range(max_passes):
+        additions: set[tuple[int, int]] = set()
+
+        for y in range(height):
+            for x in range(width):
+                if not _is_water_candidate(x, y):
+                    continue
+                dirs = _shore_dirs(x, y)
+                if len(dirs) >= 3 or {"N", "S"}.issubset(dirs) or {"E", "W"}.issubset(dirs):
+                    additions.add((x, y))
+
+        endpoints = [
+            (x, y)
+            for (x, y) in shore_cells
+            if _shore_degree(x, y) < 2
+        ]
+
+        for x, y in endpoints:
+            best: tuple[tuple[int, int, int, int], tuple[int, int]] | None = None
+            for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                intermediates: list[tuple[int, int]] = []
+                for dist in range(1, max_search_distance + 1):
+                    nx, ny = x + dx * dist, y + dy * dist
+                    if not (0 <= nx < width and 0 <= ny < height):
+                        break
+                    if (nx, ny) in shore_cells:
+                        if intermediates:
+                            cand_x, cand_y = intermediates[0]
+                            best = _consider_best_candidate(best, cand_x, cand_y, 3, dist)
+                        break
+                    if not _is_water_candidate(nx, ny):
+                        break
+                    intermediates.append((nx, ny))
+
+            for dx, dy in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                nx, ny = x + dx, y + dy
+                if (nx, ny) not in shore_cells:
+                    continue
+                candidates = [
+                    (x + dx, y),
+                    (x, y + dy),
+                ]
+                valid = [pt for pt in candidates if _is_water_candidate(*pt)]
+                if not valid:
+                    continue
+                valid.sort(key=lambda pt: _candidate_score(*pt), reverse=True)
+                cand_x, cand_y = valid[0]
+                best = _consider_best_candidate(best, cand_x, cand_y, 2, 1)
+
+            for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                cx, cy = x + dx, y + dy
+                if not _is_water_candidate(cx, cy):
+                    continue
+                if _shore_degree(cx, cy) >= 2:
+                    best = _consider_best_candidate(best, cx, cy, 1, 1)
+
+            dirs = _shore_dirs(x, y)
+            if len(dirs) == 1:
+                only_dir = next(iter(dirs))
+                opposite = {
+                    "N": (0, 1),
+                    "E": (-1, 0),
+                    "S": (0, -1),
+                    "W": (1, 0),
+                }[only_dir]
+                cx, cy = x + opposite[0], y + opposite[1]
+                if _is_water_candidate(cx, cy) and _adjacent_shore_count(cx, cy) > 0:
+                    best = _consider_best_candidate(best, cx, cy, 0, 1)
+
+            if best is not None:
+                additions.add(best[1])
+
+        if not additions:
+            break
+        shore_cells |= additions
+
+    if shore_cells == {
+        (x, y)
+        for y in range(height)
+        for x in range(width)
+        if (ascii_lines[y][x] if x < len(ascii_lines[y]) else ".") == shore_char
+    }:
+        return ascii_lines
+
+    new_lines = [list(row.ljust(width, ".")) for row in ascii_lines]
+    for x, y in shore_cells:
+        if new_lines[y][x] in water_chars:
+            new_lines[y][x] = shore_char
+        elif new_lines[y][x] == shore_char:
+            new_lines[y][x] = shore_char
+    for y in range(height):
+        for x in range(width):
+            if new_lines[y][x] == shore_char and (x, y) not in shore_cells:
+                new_lines[y][x] = "~"
+    return ["".join(row) for row in new_lines]
+
+
+def filter_isolated_lake_shoreline(
+    ascii_lines: list[str],
+    shore_char: str = "L",
+    lake_chars: frozenset[str] | None = None,
+    min_lake_neighbors: int = 2,
+) -> list[str]:
+    """Demote L cells with fewer than min_lake_neighbors NESW lake neighbors to G.
+    Lake neighbors = water (~, `) or L. Helps avoid diagonal-looking lake outlines."""
+    if lake_chars is None:
+        lake_chars = WATER_CHARS | frozenset({shore_char})
+    height = len(ascii_lines)
+    width = max((len(row) for row in ascii_lines), default=0)
+    if width == 0 or height == 0:
+        return ascii_lines
+
+    def _cell(lines_ref: list[list[str]], px: int, py: int) -> str:
+        if not (0 <= py < height and 0 <= px < width):
+            return "."
+        row = lines_ref[py] if py < len(lines_ref) else []
+        return row[px] if px < len(row) else "."
+
+    def _lake_neighbor_count(lines_ref: list[list[str]], px: int, py: int) -> int:
+        count = 0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            if _cell(lines_ref, px + dx, py + dy) in lake_chars:
+                count += 1
+        return count
+
+    lines = [list(row.ljust(width, ".")) for row in ascii_lines]
+    changed = True
+    while changed:
+        changed = False
+        for y in range(height):
+            for x in range(width):
+                if lines[y][x] != shore_char:
+                    continue
+                if _lake_neighbor_count(lines, x, y) < min_lake_neighbors:
+                    lines[y][x] = "G"
+                    changed = True
+    return ["".join(row) for row in lines]
 
 
 def propagate_shore_masks(
@@ -1193,6 +1455,11 @@ def paint_map_to_png(
         lr = lake_cfg.get("range")
         if isinstance(lr, (list, tuple)) and len(lr) >= 2:
             lake_range_override = (int(lr[0]), int(lr[1]))
+    # Extend lake range to include special tiles (e.g. south_of_n_edge: 49)
+    lake_load_end = lake_range_override[1]
+    if lake_special_tiles:
+        lake_load_end = max(lake_load_end, max(lake_special_tiles.values()))
+    lake_load_range: tuple[int, int] = (lake_range_override[0], lake_load_end)
     river_cfg = cfg.get("river")
     river_map_override: dict[int, int] | None = None
     river_range_override: tuple[int, int] = (10, 11)
@@ -1249,7 +1516,7 @@ def paint_map_to_png(
         if grass_shoreline_lake_range or lakesrivers_sheet_path:
             if lakesrivers_sheet_path and lakesrivers_sheet_path.exists():
                 grass_shoreline_lake = load_grass_from_sheet(
-                    lakesrivers_sheet_path, tile_size, tile_range=lake_range_override, tileset_json_path=None
+                    lakesrivers_sheet_path, tile_size, tile_range=lake_load_range, tileset_json_path=None
                 )
             elif grass_shoreline_lake_range:
                 grass_shoreline_lake = load_grass_from_sheet(
@@ -1276,7 +1543,7 @@ def paint_map_to_png(
     if lakesrivers_sheet_path and lakesrivers_sheet_path.exists():
         if not grass_shoreline_lake:
             grass_shoreline_lake = load_grass_from_sheet(
-                lakesrivers_sheet_path, tile_size, tile_range=lake_range_override, tileset_json_path=None
+                lakesrivers_sheet_path, tile_size, tile_range=lake_load_range, tileset_json_path=None
             )
         if not grass_shoreline_river:
             grass_shoreline_river = load_grass_from_sheet(
@@ -1411,6 +1678,8 @@ def paint_map_to_png(
             )
             water_mask_grid[py][px] = m
     shore_ascii_lines = close_ocean_shoreline_gaps(ascii_lines)
+    shore_ascii_lines = close_lake_shoreline_gaps(shore_ascii_lines)
+    shore_ascii_lines = filter_isolated_lake_shoreline(shore_ascii_lines)
     shore_mask_grid = propagate_shore_masks(shore_ascii_lines, water_mask_grid)
 
     def _adjacent_to_shoreline_cell(ax: int, ay: int) -> bool:
@@ -1580,7 +1849,18 @@ def paint_map_to_png(
                 ocean_connected=ocean_connected,
             )
 
-            skip_dirt = shore_ch in ("B", "L", "R")
+            # Dirt: skip on shoreline and within 1 tile of shoreline (per terrain rules)
+            def _within_1_of_shoreline(px: int, py: int) -> bool:
+                for ddx, ddy in [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0)]:
+                    nx, ny = px + ddx, py + ddy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        nr = shore_ascii_lines[ny] if ny < len(shore_ascii_lines) else ""
+                        nc = nr[nx] if nx < len(nr) else "."
+                        if nc in ("B", "L", "R"):
+                            return True
+                return False
+
+            skip_dirt = _within_1_of_shoreline(x, y)
 
             if water_shallow is not None:
                 if ch in WATER_CHARS:
@@ -1682,6 +1962,29 @@ def paint_map_to_png(
                             idx = direct_lake_special_tile - lake_range_override[0]
                             if 0 <= idx < len(grass_shoreline_lake):
                                 return grass_shoreline_lake[idx], True
+                    # Special: if south neighbor is L and would get tile 6 (N edge), use south_of_n_edge tile (e.g. 49)
+                    south_of_n_edge_tile = lake_special_tiles.get("south_of_n_edge") if lake_special_tiles else None
+                    if (
+                        south_of_n_edge_tile is not None
+                        and ch == "L"
+                        and grass_shoreline_lake
+                        and lakesrivers_sheet_path
+                        and y + 1 < height
+                    ):
+                        sy, sx = y + 1, x
+                        south_ch = shore_ascii_lines[sy][sx] if sy < len(shore_ascii_lines) and sx < len(shore_ascii_lines[sy]) else "."
+                        if south_ch in ("L", "R"):
+                            south_mask = get_water_adjacency_bitmask(
+                                shore_ascii_lines, sx, sy, water_chars=LAKE_WATER_CHARS, border_width=0
+                            )
+                            south_mask = _lake_mask_with_diagonal_inference(
+                                shore_ascii_lines, sx, sy, south_mask, LAKE_WATER_CHARS
+                            )
+                            south_tile = lake_map_override.get(south_mask, lake_range_override[0]) if lake_map_override else 6
+                            if south_tile == 6 and lake_load_range[0] <= south_of_n_edge_tile <= lake_load_range[1]:
+                                idx = south_of_n_edge_tile - lake_load_range[0]
+                                if 0 <= idx < len(grass_shoreline_lake):
+                                    return grass_shoreline_lake[idx], True
                     special_inset_corner_tile = None
                     if inset_candidate or (explicit_shore and wmask == 0):
                         special_inset_corner_tile = _get_ocean_inset_special_tile(
@@ -1707,6 +2010,15 @@ def paint_map_to_png(
                         return None, False
                     # L = lake shoreline: use lake tiles if available, else continent (inlets need shoreline too)
                     if (ch == "L" or (adj_lake and ch != "B")) and grass_shoreline_lake:
+                        # Use lake water chars (L/R count as water) so straight edges get correct mask
+                        lake_mask = get_water_adjacency_bitmask(
+                            shore_ascii_lines, x, y, water_chars=LAKE_WATER_CHARS, border_width=0
+                        )
+                        if lake_mask != 0:
+                            eff_mask = lake_mask
+                        eff_mask = _lake_mask_with_diagonal_inference(
+                            ascii_lines, x, y, eff_mask, LAKE_WATER_CHARS
+                        )
                         if lakesrivers_sheet_path and lake_map_override is not None:
                             tile_idx = lake_map_override.get(eff_mask, lake_range_override[0])
                             lake_start, lake_end = lake_range_override[0], lake_range_override[1]
@@ -1859,6 +2171,10 @@ def paint_map_to_png(
 
             if ch == "I" and grass_imgs:
                 is_shore = False
+                # Paint grass underneath so hiding hill layer shows grass
+                grass_tile = _pick_interior_grass()
+                if grass_tile:
+                    _paste_visible(grass_layer, grass_tile, SOLID_TILE_COLORS["G"], color_tiles)
                 if grass_hill:
                     hmask = get_hill_adjacency_bitmask(ascii_lines, x, y)
                     tile_id = hill_map.get(hmask, hill_map.get(0, 1))
@@ -1881,7 +2197,11 @@ def paint_map_to_png(
                     else:
                         _paste_visible(grass_layer, tile, SOLID_TILE_COLORS["G"], color_tiles)
             elif ch == "I":
-                # Fallback when grass_imgs empty: use solid hill color so hills are never blank
+                # Fallback when grass_imgs empty: paint grass base, then hill
+                grass_rgb = SOLID_TILE_COLORS.get("G", (104, 178, 76, 255))
+                if grass_rgb not in color_tiles:
+                    color_tiles[grass_rgb] = Image.new("RGBA", (tile_size, tile_size), grass_rgb)
+                grass_layer.paste(color_tiles[grass_rgb], (dx, dy))
                 rgb = SOLID_TILE_COLORS.get("I", (90, 120, 70, 255))
                 if rgb not in color_tiles:
                     color_tiles[rgb] = Image.new("RGBA", (tile_size, tile_size), rgb)
@@ -1971,8 +2291,8 @@ def paint_map_to_png(
                 idx = min(bitmask, len(dirt_tiles) - 1)
                 _paste_visible(dirt_layer, dirt_tiles[idx], SOLID_TILE_COLORS["P"], color_tiles)
 
-            # Trees layer: T, F cells
-            if ch in ("T", "F"):
+            # Trees layer: T, F cells (skip on shoreline B/L/R per terrain rules)
+            if ch in ("T", "F") and shore_ch not in ("B", "L", "R"):
                 tile_id = tile_rows[y][x] if y < len(tile_rows) and x < len(tile_rows[y]) else 0
                 if tile_id and tile_id > 0:
                     idx = tile_id - 1

@@ -1,9 +1,14 @@
 import unittest
 
 from tilemap_generator.paint_map_png import (
+    LAKE_WATER_CHARS,
+    _lake_mask_with_diagonal_inference,
     _ocean_connected_water_cells,
+    close_lake_shoreline_gaps,
     close_ocean_shoreline_gaps,
+    filter_isolated_lake_shoreline,
     count_adjacent_shoreline_cells,
+    get_water_adjacency_bitmask,
     get_water_adjacency_with_type,
     match_lake_shoreline_special_tile,
     match_ocean_inset_special_tile,
@@ -318,6 +323,147 @@ class PropagateShoreMasksTests(unittest.TestCase):
         closed = close_ocean_shoreline_gaps(ascii_lines)
 
         self.assertEqual(closed[1][2], "G")
+
+
+class CloseLakeShorelineGapsTests(unittest.TestCase):
+    def test_closes_diagonal_water_gap_between_l_cells(self) -> None:
+        ascii_lines = [
+            "LL",
+            "~L",
+        ]
+
+        closed = close_lake_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[1][0], "L")
+
+    def test_closes_straight_water_gap_between_l_cells(self) -> None:
+        ascii_lines = [
+            "L~L",
+        ]
+
+        closed = close_lake_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[0][1], "L")
+
+    def test_no_promotion_when_water_not_between_l_cells(self) -> None:
+        ascii_lines = [
+            "~~~",
+            "~L~",
+            "~~~",
+        ]
+
+        closed = close_lake_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[0][1], "~")
+        self.assertEqual(closed[1][0], "~")
+        self.assertEqual(closed[1][2], "~")
+        self.assertEqual(closed[2][1], "~")
+
+    def test_promotes_water_with_two_l_neighbors(self) -> None:
+        ascii_lines = [
+            "L~L",
+            "~L~",
+        ]
+
+        closed = close_lake_shoreline_gaps(ascii_lines)
+
+        self.assertEqual(closed[0][1], "L")
+        self.assertEqual(closed[1][0], "L")
+        self.assertEqual(closed[1][2], "L")
+
+
+class FilterIsolatedLakeShorelineTests(unittest.TestCase):
+    """Lake outline rule: L needs at least 2 NESW lake neighbors (water or L) to avoid diagonals."""
+
+    def test_demotes_l_with_one_lake_neighbor(self) -> None:
+        # L at (1,0) touches only ~ at (0,0) -> 1 neighbor -> demote to G
+        ascii_lines = [
+            "~L.",
+            "...",
+        ]
+        out = filter_isolated_lake_shoreline(ascii_lines)
+        self.assertEqual(out[0][1], "G")
+
+    def test_keeps_l_with_two_lake_neighbors(self) -> None:
+        # L at (1,1) touches ~ at (0,1) and (2,1) -> 2 neighbors -> keep L
+        ascii_lines = [
+            "...",
+            "~L~",
+            "...",
+        ]
+        out = filter_isolated_lake_shoreline(ascii_lines)
+        self.assertEqual(out[1][1], "L")
+
+    def test_demotion_cascades(self) -> None:
+        # L at (0,1) has only L(1,0) -> demote. Then L at (1,0) has only ~(0,0) -> demote.
+        ascii_lines = [
+            "~L",
+            "L.",
+        ]
+        out = filter_isolated_lake_shoreline(ascii_lines)
+        self.assertEqual(out[0][1], "G")
+        self.assertEqual(out[1][0], "G")
+
+
+class LakeMaskDiagonalInferenceTests(unittest.TestCase):
+    def test_n_edge_with_ne_water_upgrades_to_n_e_corner(self) -> None:
+        ascii_lines = [
+            "~L~",
+            "L.L",
+            "...",
+        ]
+        mask = _lake_mask_with_diagonal_inference(ascii_lines, 1, 1, 1)
+        self.assertEqual(mask, 3)
+
+    def test_n_edge_with_nw_water_upgrades_to_n_w_corner(self) -> None:
+        ascii_lines = [
+            "~L",
+            "L.",
+            "..",
+        ]
+        mask = _lake_mask_with_diagonal_inference(ascii_lines, 1, 1, 1)
+        self.assertEqual(mask, 9)
+
+    def test_single_edge_without_diagonal_water_unchanged(self) -> None:
+        ascii_lines = [
+            ".L.",
+            "L.G",
+            "...",
+        ]
+        mask = _lake_mask_with_diagonal_inference(ascii_lines, 1, 1, 1)
+        self.assertEqual(mask, 1)
+
+
+class LakeWaterCharsMaskTests(unittest.TestCase):
+    """Lake mask should treat L/R as water so straight edges get correct tiles."""
+
+    def test_vertical_strip_gets_mask_7_with_lake_chars(self) -> None:
+        # West column: N=~, E=~, S=L, W=G. With LAKE_WATER_CHARS, S=L counts -> mask 7
+        ascii_lines = [
+            "G~GG",
+            "GL~G",
+            "GL~G",
+            "G~GG",
+        ]
+        mask = get_water_adjacency_bitmask(
+            ascii_lines, 1, 1, water_chars=LAKE_WATER_CHARS, border_width=0
+        )
+        self.assertEqual(mask, 7, "N+E+S water -> vertical strip (tile 8)")
+
+    def test_water_chars_only_gives_mask_3_for_same_layout(self) -> None:
+        # With WATER_CHARS only, S=L does not count -> mask 3 (corner)
+        from tilemap_generator.paint_map_png import WATER_CHARS
+
+        ascii_lines = [
+            "G~GG",
+            "GL~G",
+            "GL~G",
+            "G~GG",
+        ]
+        mask = get_water_adjacency_bitmask(
+            ascii_lines, 1, 1, water_chars=WATER_CHARS, border_width=0
+        )
+        self.assertEqual(mask, 3, "N+E only -> corner (wrong for straight edge)")
 
 
 if __name__ == "__main__":

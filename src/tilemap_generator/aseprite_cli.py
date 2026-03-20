@@ -14,7 +14,7 @@ from tilemap_generator.tree_logic import to_tile_rows_with_trees
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MAC_ASEPRITE_BIN = Path("/Applications/Aseprite.app/Contents/MacOS/aseprite")
+MAC_ASEPRITE_BIN = Path.home() / "Library/Application Support/Steam/steamapps/common/Aseprite/Aseprite.app/Contents/MacOS/aseprite"
 SOLID_TILE_COLORS: dict[str, tuple[int, int, int, int]] = {
     "G": (104, 178, 76, 255),
     ".": (104, 178, 76, 255),
@@ -207,7 +207,9 @@ def command_paint(args: argparse.Namespace) -> None:
 
         from tilemap_generator.paint_map_png import (
             close_ocean_shoreline_gaps,
+            close_lake_shoreline_gaps,
             export_treeset_to_png,
+            filter_isolated_lake_shoreline,
             paint_map_to_png,
         )
 
@@ -527,6 +529,8 @@ def command_paint(args: argparse.Namespace) -> None:
                 strict=getattr(args, "strict", False),
             )
             closed_lines = close_ocean_shoreline_gaps(lines)
+            closed_lines = close_lake_shoreline_gaps(closed_lines)
+            closed_lines = filter_isolated_lake_shoreline(closed_lines)
             if closed_lines != lines:
                 with tempfile.NamedTemporaryFile(
                     "w",
