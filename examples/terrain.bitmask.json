@@ -39,12 +39,13 @@
   "_rules": [
     "Grass tile cannot be placed on top of water (~ or `).",
     "Hills (I) are placed only on grass tiles (G).",
-    "B = continent shoreline: water connected via NESW to the 2-tile ocean border. Grass adjacent to that water.",
+    "Ocean (continent mode): min 2 tiles wide. Outermost = deep (`), inner = shallow (~). Same as lake: interior water (4 neighbors) -> deep; min 1-tile shallow next to land/B.",
+    "B = continent shoreline: grass adjacent to ocean shallow water. Water connected via NESW to the 2-tile ocean border.",
     "L = lake shoreline: inland water (not connected to ocean). Grass adjacent to lakes/ponds.",
     "Lake outline (L) tiles need at least 2 NESW sides touching another lake tile (water or L) to avoid diagonals.",
-    "Lake deep water (`) has priority over shallow (~). Deep water only in lakes (not ocean). Min 1-tile shallow border around deep water. Lake shorelines (L) cannot be placed on deep water tiles.",
+    "Lake deep water (`): only in lakes (not ocean). Min 1-tile shallow border around deep water. Lake shorelines (L) cannot be placed on deep water tiles.",
     "R = river bank: rivers that do NOT connect to the ocean. Rivers with ocean outlet use B.",
-    "Shoreline, lake, and river tiles: only 1 connecting border each (no expansion inland).",
+    "Shoreline = 1 tile border around continent perimeter. No grass (G), trees (T/F), hills (I), dirt (P), etc. on shoreline. Connected via NESW (no diagonal-only links).",
     "Trees cannot be placed on B/L/R.",
     "Join (J) and POI (S, M, H, C, D, N) cannot be placed on B/L/R.",
     "Dirt (P) must be at least 1 tile away from shoreline (B/L/R).",
@@ -132,12 +133,31 @@
   },
 
   "shoreline": {
-    "range": [1, 42],
+    "range": [1, 55],
     "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
     "special_tiles": {
       "lake_east": 9,
       "tee_west": 32,
-      "tee_east": 33
+      "tee_east": 33,
+      "south_cap_north_vertical": 15,
+      "diagonal_water_1": 41,
+      "diagonal_water_3": 40,
+      "diagonal_water_6": 37,
+      "diagonal_water_8": 36,
+      "junction_n3_w5_e8_s_water": 35,
+      "junction_n_water_s13_w16_e2": 10,
+      "junction_n16_or_17_w_water": 10,
+      "junction_n_water_w2_e8_s3": 50,
+      "junction_n2_w13_s9_e_grass": 37,
+      "junction_n10_w10_s_has_37_pattern_e_grass": 41,
+      "junction_n3_e4_s_grass_w_grass": 40,
+      "junction_nw_n_w_b_e_s_water": 55,
+      "junction_n9_e5_s_water_w16_or_17": 13,
+      "junction_n3_e_water_s3_w_lake9": 3,
+      "junction_n26_e7_s_water_w13": 52,
+      "junction_n_grass_e_grass_s5_w_corner": 54,
+      "junction_n3_e_water_s3_w_grass": 3,
+      "junction_n10_e5_s6_w_water_se_water": 32
     },
     "inset_corner_tiles": {
       "top_left": 36,
@@ -152,6 +172,7 @@
       "bottom_right": 40
     },
     "inset_edge_tiles": {
+      "top": 26,
       "right": 15,
       "bottom": 33,
       "center": 42
@@ -185,7 +206,7 @@
       "7": 8,
       "8": 9,
       "9": 10,
-      "10": 3,
+      "10": 6,
       "11": 16,
       "12": 13,
       "13": 16,

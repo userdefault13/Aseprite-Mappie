@@ -191,6 +191,7 @@ def validate_legend_against_tileset(
 
 
 def to_tile_rows(lines: list[str], legend: dict[str, int]) -> list[list[int]]:
+    """Convert ASCII to tile IDs via legend. Map-building rules are enforced in map_gen_cli."""
     rows: list[list[int]] = []
     for y, line in enumerate(lines):
         row: list[int] = []

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import heapq
 import json
 import os
@@ -10,6 +11,7 @@ import struct
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 
 GRASS_CHAR = "G"
@@ -244,7 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--aseprite-bin",
         default="",
-        help="Optional explicit path to aseprite binary for preview opening.",
+        help="Path to Aseprite binary (e.g. /Applications/Aseprite.app/Contents/MacOS/aseprite on macOS). "
+        "Also set via ASEPRITE_BIN env var.",
     )
     return parser
 
@@ -423,6 +426,7 @@ def lake_shoreline_cells(
 
 
 LAND_CHARS = frozenset({GRASS_CHAR, "."})
+SHORELINE_CHARS = frozenset({SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR})
 
 
 def mark_deep_water(
@@ -448,7 +452,8 @@ def mark_deep_water(
             )
             if n_water == 4:
                 grid[y][x] = DEEP_WATER_CHAR
-    # Ensure min 1-tile shallow border: demote deep water adjacent to land
+    # Ensure min 1-tile shallow border: demote deep water adjacent to land or shoreline
+    non_water_chars = LAND_CHARS | SHORELINE_CHARS
     changed = True
     while changed:
         changed = False
@@ -458,7 +463,7 @@ def mark_deep_water(
                     continue
                 for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
                     if 0 <= nx < width and 0 <= ny < height:
-                        if grid[ny][nx] in LAND_CHARS:
+                        if grid[ny][nx] in non_water_chars:
                             grid[y][x] = WATER_CHAR
                             changed = True
                             break
@@ -511,25 +516,385 @@ def _is_ocean_border_cell(px: int, py: int, width: int, height: int, border: int
     )
 
 
+# Land terrains that must become B when adjacent to ocean (no trees/dirt on shoreline)
+OCEAN_SHORE_CONVERTIBLE = frozenset({
+    GRASS_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR,
+    TREE_CHAR, FOREST_CHAR, PATH_CHAR, HILL_CHAR,
+})
+
+
 def continent_shoreline_after_wrap(
     grid: list[list[str]],
     water_border_width: int,
 ) -> None:
-    """Per terrain rules: mark grass adjacent to ocean 2-tile border as B. Mutates grid."""
+    """Per terrain rules: mark any land adjacent to ocean water as B. Mutates grid.
+    Uses ocean-connected flood fill so shorelines encompass inlets and bays."""
     if water_border_width <= 0:
         return
     height = len(grid)
     width = max(len(row) for row in grid) if grid else 0
-    border = water_border_width
+    # Ocean-connected: all water reachable from map edge (includes bay/inlet water)
+    ocean_connected: set[Point] = set()
+    frontier: list[Point] = []
     for y in range(height):
         for x in range(width):
-            if grid[y][x] != GRASS_CHAR and grid[y][x] != LAKE_SHORELINE_CHAR:
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+    # Any land adjacent to ocean-connected water -> B
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in OCEAN_SHORE_CONVERTIBLE or grid[y][x] in POI_SHORELINE_EXCLUDE:
                 continue
             for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
-                if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS:
-                    if _is_ocean_border_cell(nx, ny, width, height, border):
-                        grid[y][x] = SHORELINE_CHAR
-                        break
+                if 0 <= nx < width and 0 <= ny < height and (nx, ny) in ocean_connected:
+                    grid[y][x] = SHORELINE_CHAR
+                    break
+
+
+def thin_2x2_shoreline_in_grid(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    shore_chars: frozenset[str] | None = None,
+) -> None:
+    """Enforce 1-tile-wide shoreline: break 2x2 blocks. Mutates grid.
+    Prefer demoting cells not adjacent to water; else demote most interior."""
+    shore_chars = shore_chars or frozenset({SHORELINE_CHAR, LAKE_SHORELINE_CHAR})
+    while True:
+        blocks: list[frozenset[Point]] = []
+        for y in range(height - 1):
+            for x in range(width - 1):
+                quad = frozenset({(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)})
+                if all(grid[py][px] in shore_chars for px, py in quad):
+                    blocks.append(quad)
+        if not blocks:
+            break
+        demote_this_round: set[Point] = set()
+        for quad in blocks:
+            candidates = [(px, py) for px, py in quad if (px, py) not in demote_this_round]
+            if not candidates:
+                continue
+
+            def _score(p: Point) -> tuple[bool, int]:
+                px, py = p
+                has_water = any(
+                    grid[ny][nx] in WATER_CHARS
+                    for nx, ny in neighbors4(px, py, width, height)
+                    if 0 <= nx < width and 0 <= ny < height
+                )
+                n_shore = sum(
+                    1
+                    for nx, ny in neighbors4(px, py, width, height)
+                    if 0 <= nx < width and 0 <= ny < height
+                    and grid[ny][nx] in shore_chars
+                    and (nx, ny) not in demote_this_round
+                )
+                return (has_water, -n_shore)
+
+            best = min(candidates, key=_score)
+            demote_this_round.add(best)
+        for x, y in demote_this_round:
+            if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                grid[y][x] = GRASS_CHAR
+        if not demote_this_round:
+            break
+
+
+def demote_shoreline_without_ocean_neighbor(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    border: int = 2,
+) -> None:
+    """If a B (continent beach) tile has no ocean-connected water in its NESW neighborhood, convert to grass."""
+    if border <= 0:
+        return
+    # Ocean-connected: all water reachable from map edge (matches continent_shoreline_after_wrap)
+    ocean_connected: set[Point] = set()
+    frontier: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != SHORELINE_CHAR:
+                continue
+            has_ocean = any(
+                (nx, ny) in ocean_connected
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+            )
+            if not has_ocean:
+                grid[y][x] = GRASS_CHAR
+
+
+def fill_diagonal_only_shore_connectors(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+) -> None:
+    """Promote land to B/L when a shore tile has water NESW but no shore NESW (diagonal-only).
+    Creates 4-connectivity while keeping 1-tile perimeter. Mutates grid."""
+    ocean_connected: set[Point] = set()
+    frontier: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+
+    shore_chars = frozenset({SHORELINE_CHAR, LAKE_SHORELINE_CHAR})
+
+    def _has_shore_nesw(px: int, py: int) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in shore_chars:
+                return True
+        return False
+
+    def _has_ocean_nesw(px: int, py: int) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < width and 0 <= ny < height and (nx, ny) in ocean_connected:
+                return True
+        return False
+
+    def _has_lake_nesw(px: int, py: int) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < width and 0 <= ny < height:
+                if grid[ny][nx] in WATER_CHARS and (nx, ny) not in ocean_connected:
+                    return True
+        return False
+
+    for _ in range(3):
+        added = 0
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x] not in shore_chars:
+                    continue
+                has_water = _has_ocean_nesw(x, y) or _has_lake_nesw(x, y)
+                if not has_water or _has_shore_nesw(x, y):
+                    continue
+                # Diagonal-only: has water NESW but no shore NESW
+                candidates: list[tuple[int, int, int]] = []
+                for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < width and 0 <= ny < height):
+                        continue
+                    if grid[ny][nx] in shore_chars or grid[ny][nx] in POI_SHORELINE_EXCLUDE:
+                        continue
+                    if grid[ny][nx] not in OCEAN_SHORE_CONVERTIBLE:
+                        continue
+                    n_water = sum(
+                        1
+                        for ddx, ddy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                        if 0 <= nx + ddx < width and 0 <= ny + ddy < height
+                        and grid[ny + ddy][nx + ddx] in WATER_CHARS
+                    )
+                    candidates.append((n_water, nx, ny))
+                if not candidates:
+                    continue
+                _, bx, by = max(candidates, key=lambda t: (t[0], -abs(t[1] - x) - abs(t[2] - y)))
+                shore_char = SHORELINE_CHAR if grid[y][x] == SHORELINE_CHAR else LAKE_SHORELINE_CHAR
+                if grid[by][bx] not in POI_SHORELINE_EXCLUDE:
+                    grid[by][bx] = shore_char
+                    added += 1
+        if added == 0:
+            break
+        thin_2x2_shoreline_in_grid(grid, width, height)
+
+
+def demote_lake_shore_without_lake_neighbor(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+) -> None:
+    """If an L (lake shoreline) tile has no lake water in its NESW neighborhood, convert to grass."""
+    ocean_connected: set[Point] = set()
+    frontier: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != LAKE_SHORELINE_CHAR:
+                continue
+            has_lake = any(
+                0 <= nx < width and 0 <= ny < height
+                and grid[ny][nx] in WATER_CHARS
+                and (nx, ny) not in ocean_connected
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+            )
+            if not has_lake:
+                grid[y][x] = GRASS_CHAR
+
+
+def relocate_pois_from_ocean_shore(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    border: int = 2,
+) -> None:
+    """Move POIs (J,S,M,H,C,D,N) off ocean shoreline. Mutates grid."""
+    if border <= 0:
+        return
+    # Ocean-connected: all water reachable from map edge (includes bays/inlets)
+    ocean_connected: set[Point] = set()
+    frontier: deque[Point] = deque()
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.popleft()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+
+    inland_chars = {GRASS_CHAR, HILL_CHAR, TREE_CHAR, FOREST_CHAR, PATH_CHAR, "."}
+    max_bfs_steps = width * height  # Safety limit
+
+    def cell_has_ocean_neighbor(cx: int, cy: int) -> bool:
+        return any((nx, ny) in ocean_connected for nx, ny in neighbors4(cx, cy, width, height))
+
+    def find_inland_neighbor(px: int, py: int) -> Point | None:
+        """BFS for nearest inland cell not adjacent to ocean."""
+        seen: set[Point] = {(px, py)}
+        queue: deque[Point] = deque(neighbors4(px, py, width, height))
+        steps = 0
+        while queue and steps < max_bfs_steps:
+            steps += 1
+            cx, cy = queue.popleft()
+            if (cx, cy) in seen:
+                continue
+            seen.add((cx, cy))
+            c = grid[cy][cx]
+            if c in inland_chars and not cell_has_ocean_neighbor(cx, cy):
+                return (cx, cy)
+            if c in WATER_CHARS or c in POI_SHORELINE_EXCLUDE:
+                continue
+            for n in neighbors4(cx, cy, width, height):
+                if n not in seen:
+                    seen.add(n)
+                    queue.append(n)
+        return None
+
+    to_relocate: list[tuple[int, int, str]] = []
+    for y in range(height):
+        for x in range(width):
+            ch = grid[y][x]
+            if ch not in POI_SHORELINE_EXCLUDE:
+                continue
+            if any((nx, ny) in ocean_connected for nx, ny in neighbors4(x, y, width, height)):
+                to_relocate.append((x, y, ch))
+
+    def fallback_step_inward(px: int, py: int) -> Point | None:
+        """When BFS finds nothing, move to neighbor with strictly fewer ocean neighbors (step inward only)."""
+        n_ocean_here = sum(
+            1 for nnx, nny in neighbors4(px, py, width, height)
+            if (nnx, nny) in ocean_connected
+        )
+        best: Point | None = None
+        best_n = 999
+        for nx, ny in neighbors4(px, py, width, height):
+            if grid[ny][nx] in WATER_CHARS or grid[ny][nx] in POI_SHORELINE_EXCLUDE:
+                continue
+            n_ocean = sum(
+                1 for nnx, nny in neighbors4(nx, ny, width, height)
+                if (nnx, nny) in ocean_connected
+            )
+            if n_ocean < n_ocean_here and n_ocean < best_n:
+                best_n = n_ocean
+                best = (nx, ny)
+        return best
+
+    for x, y, ch in to_relocate:
+        best = find_inland_neighbor(x, y)
+        if best is None:
+            best = fallback_step_inward(x, y)
+        if best is not None:
+            grid[y][x] = SHORELINE_CHAR
+            grid[best[1]][best[0]] = ch
+
+    # Repeat until no POI is adjacent to ocean (handles corners, narrow peninsulas)
+    for _ in range(60):  # Max iterations to prevent runaway
+        again = False
+        for y in range(height):
+            for x in range(width):
+                ch = grid[y][x]
+                if ch not in POI_SHORELINE_EXCLUDE:
+                    continue
+                has_ocean = any(
+                    (nx, ny) in ocean_connected for nx, ny in neighbors4(x, y, width, height)
+                )
+                if not has_ocean:
+                    continue
+                best = find_inland_neighbor(x, y)
+                if best is None:
+                    best = fallback_step_inward(x, y)
+                if best is not None:
+                    grid[y][x] = SHORELINE_CHAR
+                    grid[best[1]][best[0]] = ch
+                    again = True
+                    break
+        if not again:
+            break
 
 
 def shoreline_cells(
@@ -1107,17 +1472,22 @@ def place_access_pois(
             continue
         if grid[y][x] in WATER_CHARS:
             continue
+        if grid[y][x] in SHORELINE_CHARS:
+            continue
         if not any(n in path_cells for n in neighbors4(x, y, width, height)):
             continue
         candidates.append((x, y))
 
-    if len(candidates) < count:
-        raise ValueError(
-            f"Not enough accessible tiles for {label} count={count}. "
-            "Increase map size or lower feature counts."
+    actual_count = min(count, len(candidates))
+    if actual_count < count:
+        import sys
+        print(
+            f"Warning: Only {len(candidates)} accessible tiles for {label} (requested {count}). "
+            f"Placing {actual_count}.",
+            file=sys.stderr,
         )
 
-    points = pick_spread_points(candidates, count, rng)
+    points = pick_spread_points(candidates, actual_count, rng)
     for x, y in points:
         grid[y][x] = marker
     return points
@@ -1140,7 +1510,9 @@ def place_creep_zones(
     candidates = [
         p
         for p in all_positions(width, height)
-        if p not in blocked and grid[p[1]][p[0]] not in WATER_CHARS
+        if p not in blocked
+        and grid[p[1]][p[0]] not in WATER_CHARS
+        and grid[p[1]][p[0]] not in SHORELINE_CHARS
     ]
     if len(candidates) < count:
         raise ValueError(
@@ -1164,6 +1536,8 @@ def place_creep_zones(
                 if cell in blocked:
                     continue
                 if grid[y][x] in WATER_CHARS:
+                    continue
+                if grid[y][x] in SHORELINE_CHARS:
                     continue
                 grid[y][x] = CREEP_CHAR
                 creep_cells.add(cell)
@@ -1335,8 +1709,60 @@ def open_in_aseprite(path: Path, aseprite_bin: str) -> None:
     )
 
 
+def mark_ocean_deep_water(grid: list[list[str]], width: int, height: int) -> None:
+    """Apply lake-style deep water logic to ocean: interior ocean (4 water neighbors) -> deep.
+    Min 1-tile shallow border next to land/shoreline. Mutates grid in place."""
+    ocean_connected: set[Point] = set()
+    frontier: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] not in WATER_CHARS:
+                continue
+            if x == 0 or x == width - 1 or y == 0 or y == height - 1:
+                ocean_connected.add((x, y))
+                frontier.append((x, y))
+    while frontier:
+        x, y = frontier.pop()
+        for nx, ny in neighbors4(x, y, width, height):
+            if (nx, ny) in ocean_connected:
+                continue
+            if grid[ny][nx] not in WATER_CHARS:
+                continue
+            ocean_connected.add((nx, ny))
+            frontier.append((nx, ny))
+
+    for y in range(height):
+        for x in range(width):
+            if (x, y) not in ocean_connected or grid[y][x] != WATER_CHAR:
+                continue
+            n_water = sum(
+                1
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] in WATER_CHARS
+            )
+            if n_water == 4:
+                grid[y][x] = DEEP_WATER_CHAR
+
+    non_water_chars = LAND_CHARS | SHORELINE_CHARS
+    changed = True
+    while changed:
+        changed = False
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x] != DEEP_WATER_CHAR:
+                    continue
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if 0 <= nx < width and 0 <= ny < height:
+                        if grid[ny][nx] in non_water_chars:
+                            grid[y][x] = WATER_CHAR
+                            changed = True
+                            break
+
+
 def wrap_with_water_border(grid: list[list[str]], border: int) -> list[list[str]]:
-    """Wrap content grid with water border. Returns expanded grid."""
+    """Wrap content grid with water border. Returns expanded grid.
+    Ocean priority order: outermost perimeter = deep water (`), inner ring = shallow (~).
+    Min 2 tiles wide. Land (B) touches shallow water only."""
     if border <= 0:
         return grid
     h = len(grid)
@@ -1344,13 +1770,19 @@ def wrap_with_water_border(grid: list[list[str]], border: int) -> list[list[str]
     out_w = w + 2 * border
     out_h = h + 2 * border
     out: list[list[str]] = []
-    water_row = [WATER_CHAR] * out_w
-    for _ in range(border):
-        out.append(water_row[:])
-    for row in grid:
-        out.append([WATER_CHAR] * border + row + [WATER_CHAR] * border)
-    for _ in range(border):
-        out.append(water_row[:])
+
+    def ocean_cell(ox: int, oy: int) -> str:
+        dist = min(ox, oy, out_w - 1 - ox, out_h - 1 - oy)
+        return DEEP_WATER_CHAR if dist == 0 else WATER_CHAR
+
+    for oy in range(out_h):
+        row: list[str] = []
+        for ox in range(out_w):
+            if ox < border or ox >= out_w - border or oy < border or oy >= out_h - border:
+                row.append(ocean_cell(ox, oy))
+            else:
+                row.append(grid[oy - border][ox - border])
+        out.append(row)
     return out
 
 
@@ -1464,8 +1896,15 @@ def run_from_args(args: argparse.Namespace) -> None:
     )
 
     join_count = args.join_point_count if args.join_point_count > 0 else max(2, args.spawn_count // 2)
+    join_forbidden = set(clearing_cells)
+    if getattr(args, "map_mode", "island") == "island":
+        edge = 2
+        for x in range(args.width):
+            for y in range(args.height):
+                if x < edge or x >= args.width - edge or y < edge or y >= args.height - edge:
+                    join_forbidden.add((x, y))
     join_points = place_join_points(
-        args.width, args.height, join_count, forbidden=clearing_cells, rng=rng
+        args.width, args.height, join_count, forbidden=join_forbidden, rng=rng
     )
 
     grid = [[GRASS_CHAR for _ in range(args.width)] for _ in range(args.height)]
@@ -1584,24 +2023,239 @@ def run_from_args(args: argparse.Namespace) -> None:
         if not added_continent and not added_lake:
             break
 
-    # Lake outline rule: L cells need at least 2 NESW sides touching lake (water or L) to avoid diagonals
-    lake_chars = WATER_CHARS | {LAKE_SHORELINE_CHAR}
-    while True:
-        demote: set[Point] = set()
-        for x, y in lake_shore:
-            count = sum(
-                1
-                for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
-                if 0 <= x + dx < args.width and 0 <= y + dy < args.height
-                and grid[y + dy][x + dx] in lake_chars
-            )
-            if count < 2:
-                demote.add((x, y))
-        if not demote:
+    # Fill diagonal shoreline gaps: promote G to B/L when it bridges two diagonally-adjacent shore cells
+    # Ensures shoreline connects via NESW only (no diagonal-only links)
+    def _shore_neighbors_diagonally_adjacent(px: int, py: int, shore_set: set[Point]) -> bool:
+        """True if cell has 2+ shore neighbors that touch each other (form an inside corner)."""
+        neighbors: list[tuple[int, int]] = []
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < args.width and 0 <= ny < args.height and (nx, ny) in shore_set:
+                neighbors.append((nx, ny))
+        if len(neighbors) < 2:
+            return False
+        for i, (ax, ay) in enumerate(neighbors):
+            for (bx, by) in neighbors[i + 1 :]:
+                if abs(ax - bx) == 1 and abs(ay - by) == 1:
+                    return True
+        return False
+
+    for _ in range(4):  # Multiple passes to handle stepped coastlines
+        continent_connectors: set[Point] = set()
+        lake_connectors: set[Point] = set()
+        for y in range(args.height):
+            for x in range(args.width):
+                if grid[y][x] not in _land_chars or (x, y) in poi_protected:
+                    continue
+                if (x, y) not in continent_shore and _shore_neighbors_diagonally_adjacent(x, y, continent_shore):
+                    continent_connectors.add((x, y))
+                elif (x, y) not in lake_shore and (x, y) not in continent_shore and _shore_neighbors_diagonally_adjacent(x, y, lake_shore):
+                    lake_connectors.add((x, y))
+        if not continent_connectors and not lake_connectors:
             break
-        for x, y in demote:
+        for x, y in continent_connectors:
+            continent_shore.add((x, y))
+            if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                grid[y][x] = SHORELINE_CHAR
+        for x, y in lake_connectors:
+            if (x, y) not in continent_shore:
+                lake_shore.add((x, y))
+                if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                    grid[y][x] = LAKE_SHORELINE_CHAR
+
+    def _has_ocean_water_nesw(px: int, py: int) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < args.width and 0 <= ny < args.height:
+                if grid[ny][nx] in WATER_CHARS and (nx, ny) in ocean_connected:
+                    return True
+        return False
+
+    def _has_lake_water_nesw(px: int, py: int) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < args.width and 0 <= ny < args.height:
+                if grid[ny][nx] in WATER_CHARS and (nx, ny) not in ocean_connected:
+                    return True
+        return False
+
+    # Fill diagonal-only shore gaps (staircase): shore tiles with water NESW but no shore NESW
+    # connect only diagonally. Promote a NESW land neighbor to create 4-connectivity.
+    def _has_shore_nesw(px: int, py: int, shore_set: set[Point]) -> bool:
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = px + dx, py + dy
+            if 0 <= nx < args.width and 0 <= ny < args.height and (nx, ny) in shore_set:
+                return True
+        return False
+
+    def _promote_diagonal_only_connectors(
+        shore_set: set[Point],
+        has_water_nesw: Callable[[int, int], bool],
+        shore_char: str,
+        exclude: set[Point] | None = None,
+    ) -> None:
+        exclude = exclude or set()
+        diagonal_only = [
+            (x, y)
+            for x, y in shore_set
+            if has_water_nesw(x, y) and not _has_shore_nesw(x, y, shore_set)
+        ]
+        for x, y in diagonal_only:
+            if (x, y) not in shore_set:
+                continue
+            candidates: list[tuple[int, int, int]] = []
+            for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < args.width and 0 <= ny < args.height):
+                    continue
+                if (nx, ny) in shore_set or (nx, ny) in exclude or (nx, ny) in poi_protected:
+                    continue
+                if grid[ny][nx] not in OCEAN_SHORE_CONVERTIBLE:
+                    continue
+                n_water = sum(
+                    1
+                    for ddx, ddy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                    if 0 <= nx + ddx < args.width and 0 <= ny + ddy < args.height
+                    and grid[ny + ddy][nx + ddx] in WATER_CHARS
+                )
+                candidates.append((n_water, nx, ny))
+            if not candidates:
+                continue
+            # Prefer neighbor adjacent to water (minimize perimeter width)
+            _, bx, by = max(candidates, key=lambda t: (t[0], -abs(t[1] - x) - abs(t[2] - y)))
+            shore_set.add((bx, by))
+            if grid[by][bx] not in POI_SHORELINE_EXCLUDE:
+                grid[by][bx] = shore_char
+
+    for _ in range(3):
+        added_c = continent_shore.copy()
+        added_l = lake_shore.copy()
+        _promote_diagonal_only_connectors(
+            continent_shore, _has_ocean_water_nesw, SHORELINE_CHAR
+        )
+        _promote_diagonal_only_connectors(
+            lake_shore, _has_lake_water_nesw, LAKE_SHORELINE_CHAR, exclude=continent_shore
+        )
+        if continent_shore == added_c and lake_shore == added_l:
+            break
+
+    # Continent shoreline (B): 1 tile border, NESW-connected (no diagonal-only links).
+    # No grass, trees, hills, dirt on shoreline; path_forbidden, hill_blocked, vegetation_blocked enforce.
+    # Keep only B adjacent to ocean water (NESW) or diagonal connectors; demote inland B.
+    while True:
+        thin_demote: set[Point] = set()
+        for x, y in continent_shore:
+            if (x, y) in poi_protected or grid[y][x] in POI_SHORELINE_EXCLUDE:
+                continue
+            if _has_ocean_water_nesw(x, y):
+                continue  # Keep ocean-adjacent B
+            if _shore_neighbors_diagonally_adjacent(x, y, continent_shore):
+                continue  # Keep diagonal connectors for NESW connectivity
+            thin_demote.add((x, y))
+        if not thin_demote:
+            break
+        for x, y in thin_demote:
+            continent_shore.discard((x, y))
+            grid[y][x] = GRASS_CHAR
+
+    # Enforce 1-tile-wide shoreline: break 2x2 blocks at corners and inlets
+    def _thin_2x2_shore_blocks(
+        shore_set: set[Point],
+        has_water_adjacent: Callable[[int, int], bool],
+        width: int,
+        height: int,
+    ) -> None:
+        checker = has_water_adjacent
+        while True:
+            blocks: list[frozenset[Point]] = []
+            for y in range(height - 1):
+                for x in range(width - 1):
+                    quad = frozenset({(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)})
+                    if quad <= shore_set:
+                        blocks.append(quad)
+            if not blocks:
+                break
+            demote_this_round: set[Point] = set()
+            for quad in blocks:
+                candidates = [(px, py) for px, py in quad if (px, py) not in demote_this_round]
+                if not candidates:
+                    continue
+                # Only demote cells NOT adjacent to water (avoid creating land-water gaps)
+                safe_to_demote = [p for p in candidates if not checker(p[0], p[1])]
+                if not safe_to_demote:
+                    continue
+                # Among those, demote the most interior (most shore neighbors)
+                def _score(p: Point) -> int:
+                    px, py = p
+                    return -sum(
+                        1
+                        for nx, ny in neighbors4(px, py, width, height)
+                        if (nx, ny) in shore_set and (nx, ny) not in demote_this_round
+                    )
+                best = min(safe_to_demote, key=_score)
+                demote_this_round.add(best)
+            for x, y in demote_this_round:
+                shore_set.discard((x, y))
+                if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                    grid[y][x] = GRASS_CHAR
+            if not demote_this_round:
+                break
+
+    _thin_2x2_shore_blocks(
+        continent_shore,
+        _has_ocean_water_nesw,
+        args.width,
+        args.height,
+    )
+
+    # Lake shoreline (L): 1-tile border, NESW-connected (same as continent).
+    # Keep only L adjacent to lake water (NESW) or diagonal connectors; demote inland L.
+    lake_chars = WATER_CHARS | {LAKE_SHORELINE_CHAR}
+
+    while True:
+        thin_demote: set[Point] = set()
+        for x, y in lake_shore:
+            if (x, y) in poi_protected or grid[y][x] in POI_SHORELINE_EXCLUDE:
+                continue
+            if _has_lake_water_nesw(x, y):
+                continue  # Keep lake-adjacent L
+            if _shore_neighbors_diagonally_adjacent(x, y, lake_shore):
+                continue  # Keep diagonal connectors for NESW connectivity
+            thin_demote.add((x, y))
+        if not thin_demote:
+            break
+        for x, y in thin_demote:
             lake_shore.discard((x, y))
             grid[y][x] = GRASS_CHAR
+
+    _thin_2x2_shore_blocks(
+        lake_shore,
+        _has_lake_water_nesw,
+        args.width,
+        args.height,
+    )
+
+    # Re-assert lake perimeter: any land adjacent to lake water -> L (fixes gaps)
+    for _ in range(4):
+        added = set()
+        for y in range(args.height):
+            for x in range(args.width):
+                if grid[y][x] not in OCEAN_SHORE_CONVERTIBLE or grid[y][x] in POI_SHORELINE_EXCLUDE:
+                    continue
+                if (x, y) in continent_shore:
+                    continue
+                for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]:
+                    if 0 <= nx < args.width and 0 <= ny < args.height:
+                        if grid[ny][nx] in WATER_CHARS and (nx, ny) not in ocean_connected:
+                            added.add((x, y))
+                            break
+        if not added:
+            break
+        for x, y in added:
+            lake_shore.add((x, y))
+            if grid[y][x] not in POI_SHORELINE_EXCLUDE:
+                grid[y][x] = LAKE_SHORELINE_CHAR
+        _thin_2x2_shore_blocks(lake_shore, _has_lake_water_nesw, args.width, args.height)
 
     shoreline_all = continent_shore | lake_shore | river_bank
     path_forbidden = set(clearing_cells)
@@ -1642,7 +2296,15 @@ def run_from_args(args: argparse.Namespace) -> None:
             carve_path(grid, route, path_width, path_cells, path_forbidden)
 
         dead_end_points: list[Point] = []
-        branch_forbidden = set(path_forbidden)
+        branch_forbidden = set(path_forbidden) | dilate_cells(
+            shoreline_all, 1, args.width, args.height
+        )
+        if is_island:
+            edge = 2
+            for x in range(args.width):
+                for y in range(args.height):
+                    if x < edge or x >= args.width - edge or y < edge or y >= args.height - edge:
+                        branch_forbidden.add((x, y))
         for i in range(args.dead_end_count):
             route = build_branch(
                 grid=grid,
@@ -1738,6 +2400,17 @@ def run_from_args(args: argparse.Namespace) -> None:
     }
     vegetation_blocked = terrain_blocked | water_cells | continent_shore | lake_shore | river_bank
     shoreline_blocked = continent_shore | lake_shore | river_bank
+    # POI buffer: avoid mines, shops, creeps on shoreline or within 1 tile of it
+    poi_shoreline_blocked = dilate_cells(
+        shoreline_blocked, 1, args.width, args.height
+    )
+    # Island mode: wrap adds 2-tile water border; exclude edge band so POIs don't end up on new shore
+    if is_island:
+        edge = 2
+        for x in range(args.width):
+            for y in range(args.height):
+                if x < edge or x >= args.width - edge or y < edge or y >= args.height - edge:
+                    poi_shoreline_blocked.add((x, y))
 
     # Hills (I) on remaining grass, only where height > hill_threshold
     hill_blocked = terrain_blocked | continent_shore | lake_shore | river_bank
@@ -1781,11 +2454,11 @@ def run_from_args(args: argparse.Namespace) -> None:
         grid=grid,
         count=args.creep_zone_count,
         radius=args.creep_zone_radius,
-        blocked=terrain_blocked | shoreline_blocked,
+        blocked=terrain_blocked | poi_shoreline_blocked,
         rng=rng,
     )
 
-    poi_blocked = terrain_blocked | creep_cells | shoreline_blocked
+    poi_blocked = terrain_blocked | creep_cells | poi_shoreline_blocked
     mine_points = place_access_pois(
         grid=grid,
         path_cells=path_cells,
@@ -1807,6 +2480,45 @@ def run_from_args(args: argparse.Namespace) -> None:
         rng=rng,
     )
 
+    # Relocate join points (orange) off shoreline: move to nearest inland neighbor
+    shoreline_all = continent_shore | lake_shore | river_bank
+    relocated_joins: list[Point] = []
+    for jx, jy in join_points:
+        if (jx, jy) not in shoreline_all:
+            relocated_joins.append((jx, jy))
+            continue
+        # Find NESW neighbor not on shoreline, not water
+        best: Point | None = None
+        for nx, ny in neighbors4(jx, jy, args.width, args.height):
+            if (nx, ny) in shoreline_all or grid[ny][nx] in WATER_CHARS:
+                continue
+            # Prefer path-adjacent or grass
+            best = (nx, ny)
+            if (nx, ny) in path_cells:
+                break
+        if best is not None:
+            if (jx, jy) in continent_shore:
+                grid[jy][jx] = SHORELINE_CHAR
+            elif (jx, jy) in lake_shore:
+                grid[jy][jx] = LAKE_SHORELINE_CHAR
+            else:
+                grid[jy][jx] = RIVER_CHAR
+            relocated_joins.append(best)
+        else:
+            relocated_joins.append((jx, jy))
+    join_points = relocated_joins
+
+    # Shoreline inviolability: no grass, trees, hills, dirt on shoreline. Re-assert B/L/R.
+    for x, y in continent_shore:
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE and grid[y][x] not in (SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR):
+            grid[y][x] = SHORELINE_CHAR
+    for x, y in lake_shore:
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE and grid[y][x] not in (SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR):
+            grid[y][x] = LAKE_SHORELINE_CHAR
+    for x, y in river_bank:
+        if grid[y][x] not in POI_SHORELINE_EXCLUDE and grid[y][x] not in (SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR):
+            grid[y][x] = RIVER_CHAR
+
     # Re-assert protected markers in case any placement touched them.
     for x, y in spawn_points:
         grid[y][x] = SPAWN_CHAR
@@ -1823,6 +2535,21 @@ def run_from_args(args: argparse.Namespace) -> None:
         grid = wrap_with_water_border(grid, water_border)
         # Terrain rules: any grass/L adjacent to ocean 2-tile border is B
         continent_shoreline_after_wrap(grid, water_border)
+        # Move POIs (joins, etc.) off ocean shoreline
+        h, w = len(grid), len(grid[0]) if grid else 0
+        relocate_pois_from_ocean_shore(grid, w, h, water_border)
+        # Enforce 1-tile-wide shoreline (breaks 2x2 blocks created at wrap edge)
+        thin_2x2_shoreline_in_grid(grid, w, h)
+        # B without ocean in neighborhood -> grass
+        demote_shoreline_without_ocean_neighbor(grid, w, h, water_border)
+        # L without lake water in neighborhood -> grass
+        demote_lake_shore_without_lake_neighbor(grid, w, h)
+        # Re-assert shorelines (thinning/demote may have created grass-ocean gaps around bays)
+        continent_shoreline_after_wrap(grid, water_border)
+        # Fill diagonal-only shore gaps: promote land so shoreline is 4-connected (NESW only)
+        fill_diagonal_only_shore_connectors(grid, w, h)
+        # Ocean deep water (same as lake): interior ocean -> deep, min 1-tile shallow next to land/B
+        mark_ocean_deep_water(grid, w, h)
     else:
         # Continent mode: 2-tile land-with-trees border
         grid = wrap_with_land_border(grid, border_width, rng, tree_fraction=0.7)
@@ -1870,6 +2597,23 @@ def run_from_args(args: argparse.Namespace) -> None:
     write_ascii(out_path, grid)
     write_legend(legend_path, legend)
 
+    # CSV tile export (legend -> tile IDs, with water-in-neighborhood rule for B/L/R)
+    csv_path = out_path.with_suffix(".csv")
+    lines = ["".join(row) for row in grid]
+    from tilemap_generator.tree_logic import to_tile_rows_with_trees
+
+    tile_rows = to_tile_rows_with_trees(
+        lines,
+        legend,
+        tree_chars={"T", "F"},
+        seed=args.seed,
+        strict=getattr(args, "strict", False),
+    )
+    csv_content = "\n".join(",".join(str(tid) for tid in row) for row in tile_rows) + "\n"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.write_text(csv_content, encoding="utf-8")
+    print(f"Wrote {csv_path}")
+
     preview_path: Path | None = None
     if args.preview_in_aseprite or args.preview_out:
         use_layered = getattr(args, "preview_layered", True)
@@ -1883,13 +2627,27 @@ def run_from_args(args: argparse.Namespace) -> None:
             ext = ".preview.aseprite" if use_layered else ".preview.bmp"
             preview_path = out_path.with_suffix(ext)
 
+        aseprite_bin = getattr(args, "aseprite_bin", "") or ""
+        aseprite_available = False
+        try:
+            resolve_aseprite_bin(aseprite_bin)
+            aseprite_available = True
+        except FileNotFoundError:
+            pass
+
+        if use_layered and not aseprite_available:
+            print("Note: Aseprite CLI not found. Using flat BMP preview (use --aseprite-bin or ASEPRITE_BIN to enable layered).")
+            use_layered = False
+            if preview_path.suffix.lower() in (".aseprite", ".ase"):
+                preview_path = preview_path.with_suffix(".preview.bmp")
+
         if use_layered:
             try:
                 write_preview_layered(
                     preview_path,
                     grid,
                     args.preview_tile_size,
-                    getattr(args, "aseprite_bin", "") or "",
+                    aseprite_bin,
                 )
             except FileNotFoundError as exc:
                 if "Aseprite" in str(exc) or "aseprite" in str(exc).lower():
@@ -1902,9 +2660,9 @@ def run_from_args(args: argparse.Namespace) -> None:
             write_preview_bmp(preview_path, grid, args.preview_tile_size)
 
         print(f"Wrote {preview_path}")
-        if args.preview_in_aseprite:
+        if args.preview_in_aseprite and aseprite_available:
             try:
-                open_in_aseprite(preview_path, getattr(args, "aseprite_bin", "") or "")
+                open_in_aseprite(preview_path, aseprite_bin)
             except (FileNotFoundError, subprocess.CalledProcessError) as exc:
                 print(f"Warning: failed to open preview in Aseprite: {exc}")
 

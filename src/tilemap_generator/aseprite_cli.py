@@ -209,10 +209,13 @@ def command_paint(args: argparse.Namespace) -> None:
             WATER_CHAR,
             close_ocean_shoreline_gaps,
             close_lake_shoreline_gaps,
+            demote_shoreline_without_water_neighbor,
             export_treeset_to_png,
+            fill_bay_diagonal_shoreline,
             filter_isolated_lake_shoreline,
             paint_map_to_png,
         )
+        from tilemap_generator.paint_map_png import _ocean_connected_water_cells
 
         grass_dir: Path | None = None
         grass_sheet_path: Path | None = None
@@ -533,6 +536,16 @@ def command_paint(args: argparse.Namespace) -> None:
             closed_lines = close_lake_shoreline_gaps(
                 closed_lines, water_chars=frozenset([WATER_CHAR])
             )
+            _w = max(len(r) for r in closed_lines) if closed_lines else 0
+            _h = len(closed_lines)
+            if _w > 0 and _h > 0:
+                _ocean = _ocean_connected_water_cells(closed_lines, _w, _h)
+                closed_lines = fill_bay_diagonal_shoreline(
+                    closed_lines, _ocean, _w, _h
+                )
+                closed_lines = demote_shoreline_without_water_neighbor(
+                    closed_lines, _ocean, _w, _h
+                )
             closed_lines = filter_isolated_lake_shoreline(closed_lines)
             if closed_lines != lines:
                 with tempfile.NamedTemporaryFile(

@@ -12,6 +12,7 @@ import random
 from typing import Any
 
 
+
 # Default tile IDs (1-based, for Tiled/CSV output)
 DEFAULT_TREE_CONFIG: dict[str, Any] = {
     "single": 33,
@@ -105,6 +106,8 @@ def to_tile_rows_with_trees(
     height = len(grid)
     width = len(grid[0]) if grid else 0
 
+    # Map-building rules (1-wide shore, water-adjacency, NESW connectivity) are enforced in map_gen_cli.
+    # Tile export uses legend directly; no validation here.
     vertical_runs = find_vertical_runs(grid, tree_chars, width, height)
     rng = random.Random(seed)
 

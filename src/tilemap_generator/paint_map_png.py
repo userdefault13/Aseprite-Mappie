@@ -663,6 +663,121 @@ def count_adjacent_shoreline_cells(
     return count
 
 
+def fill_bay_diagonal_shoreline(
+    ascii_lines: list[str],
+    ocean_connected: set[tuple[int, int]],
+    width: int,
+    height: int,
+) -> list[str]:
+    """Promote land to B/L when it has water on a diagonal but not NESW, and has shore NESW.
+    Fills bay/inset corners to avoid diagonal land-water touch (1-tile perimeter)."""
+    if width == 0 or height == 0:
+        return ascii_lines
+
+    land_chars = frozenset("G.PTF") | POI_CHARS
+    diag_deltas = [(-1, -1), (1, -1), (1, 1), (-1, 1)]  # NW, NE, SE, SW
+    nesw_deltas = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+
+    def _cell(px: int, py: int) -> str:
+        if not (0 <= px < width and 0 <= py < height):
+            return "."
+        row = ascii_lines[py] if py < len(ascii_lines) else ""
+        return row[px] if px < len(row) else "."
+
+    def _has_water_nesw(px: int, py: int) -> bool:
+        return any(
+            0 <= px + dx < width and 0 <= py + dy < height
+            and _cell(px + dx, py + dy) in WATER_CHARS
+            for dx, dy in nesw_deltas
+        )
+
+    def _has_shore_nesw(px: int, py: int) -> bool:
+        return any(
+            0 <= px + dx < width and 0 <= py + dy < height
+            and _cell(px + dx, py + dy) in ("B", "L", "R")
+            for dx, dy in nesw_deltas
+        )
+
+    lines = [list(row.ljust(width, ".")) for row in ascii_lines]
+    for y in range(height):
+        for x in range(width):
+            ch = lines[y][x]
+            if ch not in land_chars:
+                continue
+            if _has_water_nesw(x, y):
+                continue  # Already has water NESW, normal rules apply
+            if not _has_shore_nesw(x, y):
+                continue  # No adjacent shore, not filling a gap
+            # Check diagonal water
+            has_diag_water = False
+            has_diag_ocean = False
+            has_diag_lake = False
+            for dx, dy in diag_deltas:
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                if _cell(nx, ny) not in WATER_CHARS:
+                    continue
+                has_diag_water = True
+                if (nx, ny) in ocean_connected:
+                    has_diag_ocean = True
+                else:
+                    has_diag_lake = True
+            if not has_diag_water:
+                continue
+            # Promote to B (ocean bay) or L (lake bay)
+            lines[y][x] = "B" if has_diag_ocean else "L"
+    return ["".join(row) for row in lines]
+
+
+def demote_shoreline_without_water_neighbor(
+    ascii_lines: list[str],
+    ocean_connected: set[tuple[int, int]],
+    width: int,
+    height: int,
+) -> list[str]:
+    """Demote B/L to G when they have no water in NESW. Keep bay fill (water on diagonal)."""
+    if width == 0 or height == 0:
+        return ascii_lines
+
+    diag_deltas = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+
+    def _cell(px: int, py: int) -> str:
+        if not (0 <= px < width and 0 <= py < height):
+            return "."
+        row = ascii_lines[py] if py < len(ascii_lines) else ""
+        return row[px] if px < len(row) else "."
+
+    def _has_water_diagonal(px: int, py: int) -> bool:
+        return any(
+            0 <= px + dx < width and 0 <= py + dy < height
+            and _cell(px + dx, py + dy) in WATER_CHARS
+            for dx, dy in diag_deltas
+        )
+
+    lines = [list(row.ljust(width, ".")) for row in ascii_lines]
+    for y in range(height):
+        for x in range(width):
+            ch = lines[y][x]
+            if ch == "B":
+                has_ocean = any(
+                    not (0 <= nx < width and 0 <= ny < height) or (nx, ny) in ocean_connected
+                    for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                )
+                if not has_ocean and not _has_water_diagonal(x, y):
+                    lines[y][x] = "G"
+            elif ch == "L":
+                has_lake = any(
+                    0 <= nx < width and 0 <= ny < height
+                    and _cell(nx, ny) in WATER_CHARS
+                    and (nx, ny) not in ocean_connected
+                    for nx, ny in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                )
+                if not has_lake and not _has_water_diagonal(x, y):
+                    lines[y][x] = "G"
+    return ["".join(row) for row in lines]
+
+
 def close_ocean_shoreline_gaps(
     ascii_lines: list[str],
     shore_char: str = "B",
@@ -1414,7 +1529,7 @@ def paint_map_to_png(
             shoreline_range = (int(sr[0]), int(sr[1]))
         special_tiles_cfg = shoreline_cfg.get("special_tiles")
         if isinstance(special_tiles_cfg, dict):
-            for key in ("lake_east", "tee_west", "tee_east"):
+            for key in ("lake_east", "tee_west", "tee_east", "south_cap_north_vertical", "diagonal_water_1", "diagonal_water_3", "diagonal_water_6", "diagonal_water_8", "junction_n3_w5_e8_s_water", "junction_n_water_s13_w16_e2", "junction_n16_or_17_w_water", "junction_n_water_w2_e8_s3", "junction_n2_w13_s9_e_grass", "junction_n10_w10_s_has_37_pattern_e_grass", "junction_n3_e4_s_grass_w_grass", "junction_nw_n_w_b_e_s_water", "junction_n9_e5_s_water_w16_or_17", "junction_n3_e_water_s3_w_lake9", "junction_n26_e7_s_water_w13", "junction_n_grass_e_grass_s5_w_corner", "junction_n3_e_water_s3_w_grass", "junction_n10_e5_s6_w_water_se_water"):
                 try:
                     if special_tiles_cfg.get(key) is not None:
                         shoreline_special_tiles[key] = int(special_tiles_cfg[key])
@@ -1493,9 +1608,9 @@ def paint_map_to_png(
     if width == 0 or height == 0:
         raise ValueError("ASCII map is empty")
 
-    # If ASCII already has water border (first row all ~), don't add another
+    # If ASCII already has water border (first row all water: ~ or `), don't add another
     first_row = ascii_lines[0] if ascii_lines else ""
-    ascii_has_border = len(first_row) >= 2 and all(c == WATER_CHAR for c in first_row)
+    ascii_has_border = len(first_row) >= 2 and all(c in WATER_CHARS for c in first_row)
     border = 0 if ascii_has_border else max(0, water_border_width)
     # For water adjacency: treat map edge as water so bottom/right edge tiles get shoreline
     adjacency_border = ascii_water_border if ascii_has_border else max(0, water_border_width)
@@ -1694,8 +1809,26 @@ def paint_map_to_png(
     shore_ascii_lines = close_lake_shoreline_gaps(
         shore_ascii_lines, water_chars=frozenset([WATER_CHAR])
     )
+    shore_ascii_lines = fill_bay_diagonal_shoreline(
+        shore_ascii_lines, ocean_connected, width, height
+    )
+    shore_ascii_lines = demote_shoreline_without_water_neighbor(
+        shore_ascii_lines, ocean_connected, width, height
+    )
     shore_ascii_lines = filter_isolated_lake_shoreline(shore_ascii_lines)
     shore_mask_grid = propagate_shore_masks(shore_ascii_lines, water_mask_grid)
+
+    def _has_water_in_neighborhood(ax: int, ay: int) -> bool:
+        """True if (ax,ay) or any of 8 neighbors has an actual water tile (~ or `). Avoids shoreline on land."""
+        for dx, dy in [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0), (-1, -1), (1, -1), (1, 1), (-1, 1)]:
+            nx, ny = ax + dx, ay + dy
+            if not (0 <= ny < height and 0 <= nx < width):
+                return True  # Out of bounds = ocean
+            row = ascii_lines[ny] if ny < len(ascii_lines) else ""
+            ch = row[nx] if nx < len(row) else "."
+            if ch in WATER_CHARS:
+                return True
+        return False
 
     def _adjacent_to_shoreline_cell(ax: int, ay: int) -> bool:
         """True if cell (ax, ay) touches any B/L/R cell."""
@@ -1705,6 +1838,16 @@ def paint_map_to_png(
                 nrow = shore_ascii_lines[ny] if ny < len(shore_ascii_lines) else ""
                 nch = nrow[nx] if nx < len(nrow) else "."
                 if nch in SHORE_CHARS:
+                    return True
+        return False
+
+    def _adjacent_to_shoreline_with_water(ax: int, ay: int) -> bool:
+        """True if any of 8 neighbors is B/L/R and has actual water in its neighborhood. Inland connectors need this."""
+        for ddx, ddy in [(0, -1), (1, 0), (0, 1), (-1, 0), (-1, -1), (1, -1), (1, 1), (-1, 1)]:
+            nx, ny = ax + ddx, ay + ddy
+            if 0 <= ny < height and 0 <= nx < width:
+                nch = _get_ascii_cell(nx, ny)
+                if nch in ("B", "L", "R") and _has_water_in_neighborhood(nx, ny):
                     return True
         return False
 
@@ -1748,6 +1891,25 @@ def paint_map_to_png(
         if eff_mask == 0:
             return None
         return _shoreline_sheet_tile_for_mask(eff_mask)
+
+    def _get_lake_shoreline_tile_index(ax: int, ay: int) -> int | None:
+        """Return lake tile index (1-9) for L/R cells, or None for non-lake-shoreline."""
+        wch = _get_ascii_cell(ax, ay)
+        if wch not in ("L", "R"):
+            return None
+        if not (0 <= ay < height and 0 <= ax < width):
+            return None
+        lake_mask = get_water_adjacency_bitmask(
+            shore_ascii_lines, ax, ay, water_chars=LAKE_WATER_CHARS, border_width=0
+        )
+        if lake_mask == 0:
+            return None
+        lake_mask = _lake_mask_with_diagonal_inference(
+            shore_ascii_lines, ax, ay, lake_mask, LAKE_WATER_CHARS
+        )
+        if lakesrivers_sheet_path and lake_map_override is not None:
+            return lake_map_override.get(lake_mask, lake_range_override[0])
+        return lake_shoreline_map.get(lake_mask, 51)
 
     def _get_ocean_inset_special_tile(ax: int, ay: int, *, allow_shore_cell: bool = False) -> int | None:
         """Return a special ocean inset edge/corner shoreline tile for inland connector cells."""
@@ -1843,15 +2005,25 @@ def paint_map_to_png(
             shore_ascii_lines, px, py, m, LAKE_WATER_CHARS
         )
 
-    # Fill water border (2 tiles wide around map) - shallow water; no grass (grass covers water)
+    # Fill water border (2 tiles wide around map) - outermost = deep, inner = shallow (match map_gen wrap)
     if border > 0 and water_shallow is not None:
-        for by in range(out_h // tile_size):
-            for bx in range(out_w // tile_size):
+        out_tiles_w = out_w // tile_size
+        out_tiles_h = out_h // tile_size
+        for by in range(out_tiles_h):
+            for bx in range(out_tiles_w):
                 if bx < border or bx >= width + border or by < border or by >= height + border:
-                    _paste_water(water_layer, water_shallow, bx * tile_size, by * tile_size)
-                    if water_shallow_layer is not None:
-                        _paste_water(water_shallow_layer, water_shallow, bx * tile_size, by * tile_size)
+                    dist_from_edge = min(bx, by, out_tiles_w - 1 - bx, out_tiles_h - 1 - by)
+                    wt = water_deep if dist_from_edge == 0 else water_shallow
+                    _paste_water(water_layer, wt, bx * tile_size, by * tile_size)
+                    if use_separate_water:
+                        _paste_water(
+                            water_deep_layer if dist_from_edge == 0 else water_shallow_layer,
+                            wt, bx * tile_size, by * tile_size
+                        )
+                    elif water_shallow_layer is not None:
+                        _paste_water(water_shallow_layer, wt, bx * tile_size, by * tile_size)
 
+    resolved_shore_tiles: dict[tuple[int, int], int] = {}
     for y, row in enumerate(ascii_lines):
         for x in range(width):
             ch = row[x] if x < len(row) else "."
@@ -1861,6 +2033,25 @@ def paint_map_to_png(
             shore_ch = shore_row[x] if x < len(shore_row) else ch
             # Use shore_ch for B/L/R (promoted water->L); never paint grass/trees on pure water
             display_ch = shore_ch if shore_ch in ("B", "L", "R") else ("G" if ch in ("T", "F") else ch)
+            # Hill on shoreline: I with 2+ B neighbors - render as shoreline or grass, not hill
+            if ch == "I":
+                b_neighbors = sum(
+                    1
+                    for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                    if 0 <= x + dx < width and 0 <= y + dy < height
+                    and _get_ascii_cell(x + dx, y + dy) == "B"
+                )
+                grass_neighbors = sum(
+                    1
+                    for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                    if 0 <= x + dx < width and 0 <= y + dy < height
+                    and _get_ascii_cell(x + dx, y + dy) in frozenset("G.PITF") | POI_CHARS
+                )
+                if b_neighbors >= 2:
+                    if grass_neighbors >= 1:
+                        ch, shore_ch, display_ch = "G", "G", "G"  # Inland connector: grass
+                    else:
+                        ch, shore_ch, display_ch = "B", "B", "B"  # Water-edge connector: shoreline
             is_pure_water = ch in WATER_CHARS and shore_ch not in ("B", "L", "R")
             dx, dy = ox + x * tile_size, oy + y * tile_size
 
@@ -1907,8 +2098,12 @@ def paint_map_to_png(
                 and _water_count >= 3
             )
 
+            # Track if this cell has water (never paint grass over water)
+            cell_has_water = False
+
             if water_shallow is not None:
                 if ch in WATER_CHARS:
+                    cell_has_water = True
                     wt = water_deep if ch == DEEP_WATER_CHAR else water_shallow
                     water_layer.paste(wt, (dx, dy))
                     if use_separate_water:
@@ -1918,7 +2113,14 @@ def paint_map_to_png(
                             _paste_water(water_deep_layer if ch == DEEP_WATER_CHAR else water_shallow_layer, wt, dx, dy)
                         else:
                             _paste_water(water_lake_layer, wt, dx, dy)
-                elif wmask != 0 and (ch in ("G", ".", "B", "L", "R", "P", "T", "F") or ch in POI_CHARS):
+                elif (
+                    wmask != 0
+                    and shore_ch in ("B", "L", "R")
+                    and (ch in ("G", ".", "B", "L", "R", "P", "T", "F") or ch in POI_CHARS)
+                ):
+                    # Only paste water under actual shoreline cells (B/L/R).
+                    # Avoids water in demoted cells (e.g. diagonal-only) so painted map matches ASCII.
+                    cell_has_water = True
                     water_layer.paste(water_shallow, (dx, dy))
                     if use_separate_water:
                         adj_river = any(
@@ -1934,6 +2136,26 @@ def paint_map_to_png(
                         if adj_river:
                             _paste_water(water_river_layer, water_shallow, dx, dy)
                         elif adj_ocean:
+                            _paste_water(water_shallow_layer, water_shallow, dx, dy)
+                        else:
+                            _paste_water(water_lake_layer, water_shallow, dx, dy)
+                elif shore_ch in ("B", "L", "R"):
+                    # Bay/inset special case: shoreline with water only on diagonal (wmask=0)
+                    # Still need shallow water underneath
+                    cell_has_water = True
+                    water_layer.paste(water_shallow, (dx, dy))
+                    if use_separate_water:
+                        adj_ocean = any(
+                            (x + ddx, y + ddy) in ocean_connected
+                            for ddx, ddy in [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                            if 0 <= x + ddx < width and 0 <= y + ddy < height
+                        )
+                        diag_water_ocean = any(
+                            0 <= x + ddx < width and 0 <= y + ddy < height
+                            and (x + ddx, y + ddy) in ocean_connected
+                            for ddx, ddy in [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+                        )
+                        if adj_ocean or diag_water_ocean:
                             _paste_water(water_shallow_layer, water_shallow, dx, dy)
                         else:
                             _paste_water(water_lake_layer, water_shallow, dx, dy)
@@ -1967,24 +2189,91 @@ def paint_map_to_png(
                             if 0 <= idx < len(grass_shoreline_lake):
                                 lakebank_layer.paste(grass_shoreline_lake[idx], (dx, dy))
             # Grass layer: shoreline tiles for water-adjacent land, explicit B/L/R, and inset connectors.
+            def _get_resolved_shore_tile_index(ax: int, ay: int) -> int | None:
+                """Return cached junction tile, inset tile, or mask-based tile for B/inland cells."""
+                if (ax, ay) in resolved_shore_tiles:
+                    return resolved_shore_tiles[(ax, ay)]
+                t = _get_ocean_shoreline_tile_index(ax, ay)
+                if t is not None:
+                    return t
+                return _get_ocean_inset_special_tile(ax, ay, allow_shore_cell=True)
+
             def _pick_grass_tile() -> tuple[Any, bool]:
-                """Returns (tile, is_shoreline). is_shoreline=True when tile is from shoreline set."""
+                """Returns (tile, is_shoreline). is_shoreline=True when tile is from shoreline set.
+                Map-building rules (1-wide shore, water-adjacency, NESW connectivity) are enforced
+                in map_gen_cli; painter trusts the ASCII and selects tiles."""
                 if not grass_imgs:
                     return None, False
                 land_chars = frozenset("G.P") | POI_CHARS | frozenset("ITF")
                 adj_lake = _adjacent_to_lake_shoreline_cell(x, y)
                 explicit_shore = shore_ch in ("B", "L", "R")
-                inset_candidate = (ch in land_chars) and wmask == 0 and _adjacent_to_shoreline_cell(x, y)
-                use_shoreline = explicit_shore or inset_candidate
+                inset_candidate = (
+                    (ch in land_chars)
+                    and wmask == 0
+                    and _adjacent_to_shoreline_cell(x, y)
+                    and _adjacent_to_shoreline_with_water(x, y)
+                )
+                # G/./P with direct water adjacency (wmask != 0): outer corners, edges—treat as shoreline
+                direct_water_shore = (ch in land_chars) and wmask != 0
+                use_shoreline = explicit_shore or inset_candidate or direct_water_shore
                 if (grass_shoreline or grass_shoreline_lake or grass_shoreline_river or grass_shoreline_extended) and use_shoreline:
                     # Direct coastlines use water adjacency; inland connectors infer from nearby shore cells.
                     eff_mask = (
                         water_mask_grid[y][x]
-                        if explicit_shore and wmask != 0 and y < len(water_mask_grid) and x < len(water_mask_grid[y])
+                        if (explicit_shore or direct_water_shore) and wmask != 0 and y < len(water_mask_grid) and x < len(water_mask_grid[y])
                         else shore_mask_grid[y][x]
                         if explicit_shore and y < len(shore_mask_grid) and x < len(shore_mask_grid[y])
                         else _propagated_shore_mask(x, y, wmask)
                     )
+                    # N=tile 10, E=tile 5, S=tile 6, W=water, SE(spot 8)=water -> tile 32 (before tee_west)
+                    junction_tile_n10_e5_s6 = shoreline_special_tiles.get("junction_n10_e5_s6_w_water_se_water")
+                    if (
+                        junction_tile_n10_e5_s6 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                        and x > 0
+                        and x + 1 < width
+                    ):
+                        north_t_j = _get_resolved_shore_tile_index(x, y - 1)
+                        east_t_j = _get_ocean_shoreline_tile_index(x + 1, y)
+                        south_t_j = _get_ocean_shoreline_tile_index(x, y + 1)
+                        west_ch_j = _get_ascii_cell(x - 1, y)
+                        se_ch_j = _get_ascii_cell(x + 1, y + 1)
+                        east_ok = east_t_j == 5 or (east_t_j is None and _get_ascii_cell(x + 1, y) in frozenset("G.PITF") | POI_CHARS)
+                        if (
+                            north_t_j == 10
+                            and east_ok
+                            and south_t_j == 6
+                            and west_ch_j in WATER_CHARS
+                            and se_ch_j in WATER_CHARS
+                        ):
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_n10_e5_s6 <= shore_end:
+                                idx = junction_tile_n10_e5_s6 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # N=tile 16 or 17, W=water -> tile 10 (check before tee_west)
+                    tee_west_tile = shoreline_special_tiles.get("tee_west")
+                    junction_n16_w = shoreline_special_tiles.get("junction_n16_or_17_w_water")
+                    if (
+                        junction_n16_w is not None
+                        and shore_ch == "B"
+                        and y > 0
+                        and x > 0
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                    ):
+                        north_t_pre = _get_ocean_shoreline_tile_index(x, y - 1)
+                        west_ch_pre = _get_ascii_cell(x - 1, y)
+                        if north_t_pre in (16, 17) and west_ch_pre in WATER_CHARS:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_n16_w <= shore_end:
+                                idx = junction_n16_w - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
                     direct_shore_special_tile = None
                     if shore_ch == "B" and shoreline_special_tiles:
                         north_cell = _get_ascii_cell(x, y - 1)
@@ -2003,6 +2292,11 @@ def paint_map_to_png(
                             eff_mask,
                             shoreline_special_tiles,
                         )
+                        # tee_west (32) only when N is peninsula (tile 12 or 15)
+                        if direct_shore_special_tile == tee_west_tile and tee_west_tile is not None:
+                            north_t_for_tee = _get_ocean_shoreline_tile_index(x, y - 1) if y > 0 else None
+                            if north_t_for_tee not in (12, 15):
+                                direct_shore_special_tile = None
                     if (
                         direct_shore_special_tile is not None
                         and shoreline_sheet_path
@@ -2013,6 +2307,326 @@ def paint_map_to_png(
                             idx = direct_shore_special_tile - shore_start
                             if 0 <= idx < len(grass_shoreline):
                                 return grass_shoreline[idx], True
+                    # Beach inlet inner corners: ocean (B) only, not lake (L). Water only on one diagonal (1=NW,3=NE,6=SW,8=SE).
+                    if shore_ch == "B" and wmask == 0 and shoreline_special_tiles and shoreline_sheet_path and shoreline_sheet_path.exists():
+                        def _is_water_at(dx: int, dy: int) -> bool:
+                            nx, ny = x + dx, y + dy
+                            if not (0 <= ny < height and 0 <= nx < width):
+                                return False
+                            row = ascii_lines[ny] if ny < len(ascii_lines) else ""
+                            return row[nx] in WATER_CHARS if nx < len(row) else False
+
+                        others_1 = [(0, -1), (1, 0), (0, 1), (-1, 0), (1, -1), (-1, 1), (1, 1)]  # exclude NW
+                        others_3 = [(0, -1), (1, 0), (0, 1), (-1, 0), (-1, -1), (-1, 1), (1, 1)]  # exclude NE
+                        others_6 = [(0, -1), (1, 0), (0, 1), (-1, 0), (-1, -1), (1, -1), (1, 1)]  # exclude SW
+                        others_8 = [(0, -1), (1, 0), (0, 1), (-1, 0), (-1, -1), (1, -1), (-1, 1)]  # exclude SE
+                        diag_tile = None
+                        if _is_water_at(-1, -1) and not any(_is_water_at(dx, dy) for dx, dy in others_1):
+                            diag_tile = shoreline_special_tiles.get("diagonal_water_1")
+                        elif _is_water_at(1, -1) and not any(_is_water_at(dx, dy) for dx, dy in others_3):
+                            diag_tile = shoreline_special_tiles.get("diagonal_water_3")
+                        elif _is_water_at(-1, 1) and not any(_is_water_at(dx, dy) for dx, dy in others_6):
+                            diag_tile = shoreline_special_tiles.get("diagonal_water_6")
+                        elif _is_water_at(1, 1) and not any(_is_water_at(dx, dy) for dx, dy in others_8):
+                            diag_tile = shoreline_special_tiles.get("diagonal_water_8")
+                        if diag_tile is not None:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= diag_tile <= shore_end:
+                                idx = diag_tile - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # South cap when N=beach tile 6 (vertical strip), E/S/W=water or 16/17: use tile 15
+                    # eff_mask 14 = S+E+W (all water), 6 = S+E (W can be tile 16/17)
+                    south_cap_tile = shoreline_special_tiles.get("south_cap_north_vertical")
+                    if (
+                        south_cap_tile is not None
+                        and shore_ch == "B"
+                        and eff_mask in (6, 14)
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                    ):
+                        north_tile_idx = _get_ocean_shoreline_tile_index(x, y - 1)
+                        if north_tile_idx == 6:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= south_cap_tile <= shore_end:
+                                idx = south_cap_tile - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 3, W=tile 5, E=tile 8, S=water -> use tile 35
+                    junction_tile = shoreline_special_tiles.get("junction_n3_w5_e8_s_water")
+                    if (
+                        junction_tile is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t = _get_ocean_shoreline_tile_index(x, y - 1)
+                        west_t = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        east_t = _get_ocean_shoreline_tile_index(x + 1, y)
+                        south_ch = _get_ascii_cell(x, y + 1)
+                        south_is_water = south_ch in WATER_CHARS
+                        if north_t == 3 and west_t == 5 and east_t == 8 and south_is_water:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile <= shore_end:
+                                idx = junction_tile - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=water, S=tile 13, W=tile 16, E=tile 2 -> use tile 10
+                    junction_tile_10 = shoreline_special_tiles.get("junction_n_water_s13_w16_e2")
+                    if (
+                        junction_tile_10 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_ch = _get_ascii_cell(x, y - 1)
+                        north_is_water = north_ch in WATER_CHARS
+                        south_t = _get_ocean_shoreline_tile_index(x, y + 1)
+                        west_t_10 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        east_t_10 = _get_ocean_shoreline_tile_index(x + 1, y)
+                        if north_is_water and south_t == 13 and west_t_10 == 16 and east_t_10 == 2:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_10 <= shore_end:
+                                idx = junction_tile_10 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=water, W=tile 2, E=tile 8, S=tile 3 -> use tile 50
+                    junction_tile_50 = shoreline_special_tiles.get("junction_n_water_w2_e8_s3")
+                    if (
+                        junction_tile_50 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_ch_50 = _get_ascii_cell(x, y - 1)
+                        north_is_water_50 = north_ch_50 in WATER_CHARS
+                        south_t_50 = _get_ocean_shoreline_tile_index(x, y + 1)
+                        west_t_50 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        east_t_50 = _get_ocean_shoreline_tile_index(x + 1, y)
+                        if north_is_water_50 and west_t_50 == 2 and east_t_50 == 8 and south_t_50 == 3:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_50 <= shore_end:
+                                idx = junction_tile_50 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 10, W=tile 10, E=grass, S has 37-pattern (W=13,S=9,E=grass) -> use tile 41
+                    # Check before 37 so upper cell gets 41 first (top-to-bottom processing)
+                    junction_tile_41 = shoreline_special_tiles.get("junction_n10_w10_s_has_37_pattern_e_grass")
+                    if (
+                        junction_tile_41 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 2 < height
+                    ):
+                        north_t_41 = _get_ocean_shoreline_tile_index(x, y - 1)
+                        west_t_41 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        east_ch_41 = _get_ascii_cell(x + 1, y)
+                        east_is_grass_41 = east_ch_41 in frozenset("G.PITF") | POI_CHARS
+                        south_ch_41 = _get_ascii_cell(x, y + 1)
+                        south_is_b = south_ch_41 == "B"
+                        south_w = _get_ocean_shoreline_tile_index(x - 1, y + 1) if x > 0 else None
+                        south_s = _get_ocean_shoreline_tile_index(x, y + 2)
+                        south_e_ch = _get_ascii_cell(x + 1, y + 1)
+                        south_e_grass = south_e_ch in frozenset("G.PITF") | POI_CHARS
+                        south_has_37_pattern = south_is_b and south_w == 13 and south_s == 9 and south_e_grass
+                        if north_t_41 == 10 and west_t_41 == 10 and east_is_grass_41 and south_has_37_pattern:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_41 <= shore_end:
+                                idx = junction_tile_41 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    resolved_shore_tiles[(x, y)] = junction_tile_41
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 2 or 41, W=tile 13, S=tile 9, E=grass -> use tile 37
+                    # Use resolved north (can be 41 from upper cell in 41/37 pair)
+                    junction_tile_37 = shoreline_special_tiles.get("junction_n2_w13_s9_e_grass")
+                    if (
+                        junction_tile_37 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_37 = _get_resolved_shore_tile_index(x, y - 1)
+                        west_t_37 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        south_t_37 = _get_ocean_shoreline_tile_index(x, y + 1)
+                        east_ch_37 = _get_ascii_cell(x + 1, y)
+                        east_is_grass = east_ch_37 in frozenset("G.PITF") | POI_CHARS
+                        if north_t_37 in (2, 41) and west_t_37 == 13 and south_t_37 == 9 and east_is_grass:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_37 <= shore_end:
+                                idx = junction_tile_37 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    resolved_shore_tiles[(x, y)] = junction_tile_37
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 3, E=tile 4, S=grass, W=grass -> use tile 40
+                    junction_tile_40 = shoreline_special_tiles.get("junction_n3_e4_s_grass_w_grass")
+                    if (
+                        junction_tile_40 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_40 = _get_ocean_shoreline_tile_index(x, y - 1)
+                        east_t_40 = _get_ocean_shoreline_tile_index(x + 1, y)
+                        south_ch_40 = _get_ascii_cell(x, y + 1)
+                        west_ch_40 = _get_ascii_cell(x - 1, y)
+                        south_grass = south_ch_40 in frozenset("G.PITF") | POI_CHARS
+                        west_grass = west_ch_40 in frozenset("G.PITF") | POI_CHARS
+                        if north_t_40 == 3 and east_t_40 in (3, 4) and south_grass and west_grass:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_40 <= shore_end:
+                                idx = junction_tile_40 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: 1(NW),2(N),4(W)=shoreline B, 5(E),6(SW),7(S),8(SE)=ocean water -> tile 55 (vertical inlet)
+                    junction_tile_55 = shoreline_special_tiles.get("junction_nw_n_w_b_e_s_water")
+                    if (
+                        junction_tile_55 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                    ):
+                        nw_ch = _get_ascii_cell(x - 1, y - 1)
+                        n_ch = _get_ascii_cell(x, y - 1)
+                        w_ch = _get_ascii_cell(x - 1, y)
+                        e_ch = _get_ascii_cell(x + 1, y)
+                        s_ch = _get_ascii_cell(x, y + 1)
+                        ne_ch = _get_ascii_cell(x + 1, y - 1)
+                        sw_ch = _get_ascii_cell(x - 1, y + 1)
+                        se_ch = _get_ascii_cell(x + 1, y + 1)
+                        nw_n_w_b = nw_ch == "B" and n_ch == "B" and w_ch == "B"
+                        e_s_water = e_ch in WATER_CHARS and s_ch in WATER_CHARS
+                        ne_sw_se_water = ne_ch in WATER_CHARS and sw_ch in WATER_CHARS and se_ch in WATER_CHARS
+                        if nw_n_w_b and e_s_water and ne_sw_se_water:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_55 <= shore_end:
+                                idx = junction_tile_55 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 9, E=tile 5, S=water, W=tile 16 or 17 -> use tile 13
+                    junction_tile_13 = shoreline_special_tiles.get("junction_n9_e5_s_water_w16_or_17")
+                    if (
+                        junction_tile_13 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_13 = _get_ocean_shoreline_tile_index(x, y - 1)
+                        east_t_13 = _get_ocean_shoreline_tile_index(x + 1, y)
+                        south_ch_13 = _get_ascii_cell(x, y + 1)
+                        south_is_water_13 = south_ch_13 in WATER_CHARS
+                        west_t_13 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        if north_t_13 == 9 and east_t_13 == 5 and south_is_water_13 and west_t_13 in (16, 17):
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_13 <= shore_end:
+                                idx = junction_tile_13 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=beach tile 3, E=water, S=beach (B), W=lake tile 9 -> use shoreline tile 3
+                    # Use resolved north so south cell can also get tile 3 when its N is 3 (continues vertical strip)
+                    junction_tile_3 = shoreline_special_tiles.get("junction_n3_e_water_s3_w_lake9")
+                    if (
+                        junction_tile_3 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_3 = _get_resolved_shore_tile_index(x, y - 1)
+                        east_ch_3 = _get_ascii_cell(x + 1, y)
+                        east_is_water_3 = east_ch_3 in WATER_CHARS
+                        south_ch_3 = _get_ascii_cell(x, y + 1)
+                        south_is_beach_3 = south_ch_3 == "B"
+                        west_lake_t_3 = _get_lake_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        if north_t_3 == 3 and east_is_water_3 and south_is_beach_3 and west_lake_t_3 == 9:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_3 <= shore_end:
+                                idx = junction_tile_3 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    resolved_shore_tiles[(x, y)] = junction_tile_3
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 26, E=tile 7, S=water, W=tile 13 -> use tile 52
+                    junction_tile_52 = shoreline_special_tiles.get("junction_n26_e7_s_water_w13")
+                    if (
+                        junction_tile_52 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_52 = _get_resolved_shore_tile_index(x, y - 1)
+                        east_t_52 = _get_ocean_shoreline_tile_index(x + 1, y)
+                        south_ch_52 = _get_ascii_cell(x, y + 1)
+                        south_is_water_52 = south_ch_52 in WATER_CHARS
+                        west_t_52 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        if north_t_52 == 26 and east_t_52 == 7 and south_is_water_52 and west_t_52 == 13:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_52 <= shore_end:
+                                idx = junction_tile_52 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=grass, E=grass, S=tile 5, W=shoreline corner (9,10,12,13) -> use tile 54
+                    junction_tile_54 = shoreline_special_tiles.get("junction_n_grass_e_grass_s5_w_corner")
+                    if (
+                        junction_tile_54 is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_ch_54 = _get_ascii_cell(x, y - 1)
+                        east_ch_54 = _get_ascii_cell(x + 1, y)
+                        north_grass_54 = north_ch_54 in frozenset("G.PITF") | POI_CHARS
+                        east_grass_54 = east_ch_54 in frozenset("G.PITF") | POI_CHARS
+                        south_t_54 = _get_ocean_shoreline_tile_index(x, y + 1)
+                        west_t_54 = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
+                        w_is_corner = west_t_54 in (9, 10, 12, 13) if west_t_54 is not None else False
+                        if north_grass_54 and east_grass_54 and south_t_54 == 5 and w_is_corner:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_54 <= shore_end:
+                                idx = junction_tile_54 - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    return grass_shoreline[idx], True
+                    # Junction: N=tile 3, E=water, S=tile 3, W=grass -> use tile 3 (vertical strip)
+                    junction_tile_3_v = shoreline_special_tiles.get("junction_n3_e_water_s3_w_grass")
+                    if (
+                        junction_tile_3_v is not None
+                        and shore_ch == "B"
+                        and shoreline_sheet_path
+                        and shoreline_sheet_path.exists()
+                        and y > 0
+                        and y + 1 < height
+                    ):
+                        north_t_3v = _get_resolved_shore_tile_index(x, y - 1)
+                        east_ch_3v = _get_ascii_cell(x + 1, y)
+                        east_water_3v = east_ch_3v in WATER_CHARS
+                        south_t_3v = _get_resolved_shore_tile_index(x, y + 1)
+                        west_ch_3v = _get_ascii_cell(x - 1, y)
+                        west_grass_3v = west_ch_3v in frozenset("G.PITF") | POI_CHARS
+                        if north_t_3v == 3 and east_water_3v and south_t_3v == 3 and west_grass_3v:
+                            shore_start, shore_end = shoreline_range
+                            if shore_start <= junction_tile_3_v <= shore_end:
+                                idx = junction_tile_3_v - shore_start
+                                if 0 <= idx < len(grass_shoreline):
+                                    resolved_shore_tiles[(x, y)] = junction_tile_3_v
+                                    return grass_shoreline[idx], True
                     direct_lake_special_tile = None
                     if shore_ch == "L" and lake_special_tiles:
                         north_raw = ascii_lines[y - 1][x] if y - 1 >= 0 and x < len(ascii_lines[y - 1]) else "."
@@ -2278,6 +2892,16 @@ def paint_map_to_png(
                     pass
                 return True
 
+            def _visible_grass_or_default(t: Any) -> Any:
+                """Return tile if visible; else try default grass to avoid solid-green fallback."""
+                if t and _is_tile_visible(t):
+                    return t
+                if grass_imgs:
+                    default_tile = grass_imgs[min(grass_default_idx, len(grass_imgs) - 1)]
+                    if _is_tile_visible(default_tile):
+                        return default_tile
+                return t  # keep original so _paste_visible can use solid fallback if needed
+
             def _paste_visible(
                 layer: Any,
                 tile: Any,
@@ -2307,9 +2931,11 @@ def paint_map_to_png(
                 fallback_rgb: tuple[int, int, int, int],
                 *,
                 use_lakebank: bool | None = None,
+                skip_grass_over_water: bool = False,
             ) -> None:
                 """Paste shoreline tile to Shoreline (ocean) or LakeBank (lake/river) layer.
-                use_lakebank: True=lakebank, False=shoreline, None=infer from ch and is_lake."""
+                use_lakebank: True=lakebank, False=shoreline, None=infer from ch and is_lake.
+                skip_grass_over_water: when True, never paste to grass layer (rule: no grass over water)."""
                 if use_lakebank is None:
                     use_lakebank = (ch in ("L", "R")) or is_lake
                 # Use correct fallback per layer: lakebank=L or R, shoreline=B (so inset tiles aren't beige)
@@ -2323,7 +2949,7 @@ def paint_map_to_png(
                     _paste_visible(lakebank_layer, tile, rgb, color_tiles)
                 elif shoreline_layer:
                     _paste_visible(shoreline_layer, tile, rgb, color_tiles)
-                elif grass_layer:
+                elif grass_layer and not skip_grass_over_water:
                     # No shoreline output: use grass layer so B/L/R still render (fallback color)
                     _paste_visible(grass_layer, tile, fallback_rgb, color_tiles)
 
@@ -2333,8 +2959,8 @@ def paint_map_to_png(
             elif ch == "I" and grass_imgs:
                 is_shore = False
                 # Paint grass underneath so hiding hill layer shows grass
-                grass_tile = _pick_interior_grass()
-                if grass_tile:
+                grass_tile = _visible_grass_or_default(_pick_interior_grass())
+                if grass_tile and not cell_has_water:
                     _paste_visible(grass_layer, grass_tile, SOLID_TILE_COLORS["G"], color_tiles)
                 if grass_hill:
                     hmask = get_hill_adjacency_bitmask(ascii_lines, x, y)
@@ -2355,20 +2981,21 @@ def paint_map_to_png(
                 if tile:
                     if hill_layer:
                         _paste_visible(hill_layer, tile, SOLID_TILE_COLORS["I"], color_tiles)
-                    else:
+                    elif not cell_has_water:
                         _paste_visible(grass_layer, tile, SOLID_TILE_COLORS["G"], color_tiles)
             elif ch == "I":
                 # Fallback when grass_imgs empty: paint grass base, then hill
-                grass_rgb = SOLID_TILE_COLORS.get("G", (104, 178, 76, 255))
-                if grass_rgb not in color_tiles:
-                    color_tiles[grass_rgb] = Image.new("RGBA", (tile_size, tile_size), grass_rgb)
-                grass_layer.paste(color_tiles[grass_rgb], (dx, dy))
+                if not cell_has_water:
+                    grass_rgb = SOLID_TILE_COLORS.get("G", (104, 178, 76, 255))
+                    if grass_rgb not in color_tiles:
+                        color_tiles[grass_rgb] = Image.new("RGBA", (tile_size, tile_size), grass_rgb)
+                    grass_layer.paste(color_tiles[grass_rgb], (dx, dy))
                 rgb = SOLID_TILE_COLORS.get("I", (90, 120, 70, 255))
                 if rgb not in color_tiles:
                     color_tiles[rgb] = Image.new("RGBA", (tile_size, tile_size), rgb)
                 if hill_layer:
                     hill_layer.paste(color_tiles[rgb], (dx, dy))
-                else:
+                elif not cell_has_water:
                     grass_layer.paste(color_tiles[rgb], (dx, dy))
             elif display_ch in ("G", ".", "B", "L", "R") and grass_imgs:
                 tile, is_shore = _pick_grass_tile()
@@ -2382,59 +3009,67 @@ def paint_map_to_png(
                         if strict
                         else grass_imgs[rng.randint(0, len(grass_imgs) - 1)]
                     )
+                    tile = _visible_grass_or_default(tile)
                     fallback = SOLID_TILE_COLORS.get(ch, SOLID_TILE_COLORS["G"])
                     adj_lake = _adjacent_to_lake_shoreline_cell(x, y)
                     use_shore_layer = shore_ch in ("B", "L", "R") or is_shore
                     if use_shore_layer and ch in ("G", "."):
                         fallback = SOLID_TILE_COLORS["L"] if adj_lake else SOLID_TILE_COLORS["B"]
                     if use_shore_layer:
+                        # When is_shore is False (demoted: no water in neighborhood), paste grass tile, not beige fallback
                         _paste_shore_tile(
-                            tile if is_shore else None,
-                            fallback,
+                            tile,
+                            fallback if is_shore else SOLID_TILE_COLORS["G"],
                             use_lakebank=adj_lake if ch in ("G", ".") else None,
+                            skip_grass_over_water=cell_has_water,
                         )
                     elif is_shore:
-                        _paste_shore_tile(tile, fallback)
+                        _paste_shore_tile(tile, fallback, skip_grass_over_water=cell_has_water)
                     else:
-                        _paste_visible(grass_layer, tile, fallback, color_tiles)
+                        if not cell_has_water:
+                            _paste_visible(grass_layer, tile, fallback, color_tiles)
             elif ch == "P" and grass_imgs:
                 tile, is_shore = _pick_grass_tile()
-                tile = tile or _pick_interior_grass()
+                tile = _visible_grass_or_default(tile or _pick_interior_grass())
                 fallback = SOLID_TILE_COLORS["P"]
                 if is_shore:
-                    _paste_shore_tile(tile, fallback)
+                    _paste_shore_tile(tile, fallback, skip_grass_over_water=cell_has_water)
                 else:
-                    _paste_visible(grass_layer, tile, fallback, color_tiles)
+                    if not cell_has_water:
+                        _paste_visible(grass_layer, tile, fallback, color_tiles)
             elif ch in POI_CHARS:
                 # POI cells: draw base terrain (grass or path), then marker on poi_layer
                 if ch in POI_GRASS_BASE and grass_imgs:
                     tile, is_shore = _pick_grass_tile()
-                    tile = tile or _pick_interior_grass()
+                    tile = _visible_grass_or_default(tile or _pick_interior_grass())
                     fallback = SOLID_TILE_COLORS["G"]
                     if is_shore:
-                        _paste_shore_tile(tile, fallback)
+                        _paste_shore_tile(tile, fallback, skip_grass_over_water=cell_has_water)
                     else:
-                        _paste_visible(grass_layer, tile, fallback, color_tiles)
-                elif ch in POI_PATH_BASE and dirt_tiles and not skip_dirt:
+                        if not cell_has_water:
+                            _paste_visible(grass_layer, tile, fallback, color_tiles)
+                elif ch in POI_PATH_BASE and dirt_tiles and not skip_dirt and not cell_has_water:
                     bitmask = get_path_bitmask(ascii_lines, x, y)
                     idx = min(bitmask, len(dirt_tiles) - 1)
                     _paste_visible(dirt_layer, dirt_tiles[idx], SOLID_TILE_COLORS["P"], color_tiles)
                 elif ch in POI_PATH_BASE and grass_imgs:
                     tile, is_shore = _pick_grass_tile()
-                    tile = tile or _pick_interior_grass()
+                    tile = _visible_grass_or_default(tile or _pick_interior_grass())
                     fallback = SOLID_TILE_COLORS["P"]
                     if is_shore:
-                        _paste_shore_tile(tile, fallback)
+                        _paste_shore_tile(tile, fallback, skip_grass_over_water=cell_has_water)
                     else:
-                        _paste_visible(grass_layer, tile, fallback, color_tiles)
+                        if not cell_has_water:
+                            _paste_visible(grass_layer, tile, fallback, color_tiles)
                 elif grass_imgs:
                     tile, is_shore = _pick_grass_tile()
-                    tile = tile or _pick_interior_grass()
+                    tile = _visible_grass_or_default(tile or _pick_interior_grass())
                     fallback = SOLID_TILE_COLORS["G"]
                     if is_shore:
-                        _paste_shore_tile(tile, fallback)
+                        _paste_shore_tile(tile, fallback, skip_grass_over_water=cell_has_water)
                     else:
-                        _paste_visible(grass_layer, tile, fallback, color_tiles)
+                        if not cell_has_water:
+                            _paste_visible(grass_layer, tile, fallback, color_tiles)
                 rgb = SOLID_TILE_COLORS.get(ch, DEFAULT_COLOR)
                 if rgb not in color_tiles:
                     color_tiles[rgb] = Image.new("RGBA", (tile_size, tile_size), rgb)
@@ -2446,19 +3081,20 @@ def paint_map_to_png(
                 # Pure water: only paint water layer; never paint grass/trees on top
                 pass
             else:
-                rgb = SOLID_TILE_COLORS.get(display_ch, DEFAULT_COLOR)
-                if rgb not in color_tiles:
-                    color_tiles[rgb] = Image.new("RGBA", (tile_size, tile_size), rgb)
-                grass_layer.paste(color_tiles[rgb], (dx, dy))
+                if not cell_has_water:
+                    rgb = SOLID_TILE_COLORS.get(display_ch, DEFAULT_COLOR)
+                    if rgb not in color_tiles:
+                        color_tiles[rgb] = Image.new("RGBA", (tile_size, tile_size), rgb)
+                    grass_layer.paste(color_tiles[rgb], (dx, dy))
 
             # Dirt layer: P cells only, no dirt on ocean-adjacent tiles (reserve for shoreline)
-            if not is_land_surrounded_by_water and ch == "P" and dirt_tiles and not skip_dirt:
+            if not is_land_surrounded_by_water and not cell_has_water and ch == "P" and dirt_tiles and not skip_dirt:
                 bitmask = get_path_bitmask(ascii_lines, x, y)
                 idx = min(bitmask, len(dirt_tiles) - 1)
                 _paste_visible(dirt_layer, dirt_tiles[idx], SOLID_TILE_COLORS["P"], color_tiles)
 
             # Trees layer: T, F cells (skip on water and shoreline B/L/R per terrain rules)
-            if not is_land_surrounded_by_water and ch in ("T", "F") and not is_pure_water and shore_ch not in ("B", "L", "R"):
+            if not is_land_surrounded_by_water and not cell_has_water and ch in ("T", "F") and not is_pure_water and shore_ch not in ("B", "L", "R"):
                 tile_id = tile_rows[y][x] if y < len(tile_rows) and x < len(tile_rows[y]) else 0
                 if tile_id and tile_id > 0:
                     idx = tile_id - 1
