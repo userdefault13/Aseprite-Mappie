@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .tree_logic import DEFAULT_TREE_CONFIG, to_tile_rows_with_trees
+from .tree_logic import DEFAULT_TREE_CONFIG, apply_hill_interior_grass_tile_rows, to_tile_rows_with_trees
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -202,7 +202,7 @@ def to_tile_rows(lines: list[str], legend: dict[str, int]) -> list[list[int]]:
                 )
             row.append(legend[char])
         rows.append(row)
-    return rows
+    return apply_hill_interior_grass_tile_rows(rows, lines, legend)
 
 
 def write_csv(path: Path, rows: list[list[int]]) -> None:

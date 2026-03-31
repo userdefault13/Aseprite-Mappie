@@ -64,6 +64,59 @@ def find_vertical_runs(
     return result
 
 
+def _grass_tile_id_for_hill_interior(legend: dict[str, int]) -> int | None:
+    if "G" in legend:
+        return legend["G"]
+    if "." in legend:
+        return legend["."]
+    return None
+
+
+def apply_hill_interior_grass_tile_rows(
+    rows: list[list[int]],
+    lines: list[str],
+    legend: dict[str, int],
+    *,
+    hill_char: str = "I",
+) -> list[list[int]]:
+    """Where hill_char has all four cardinal neighbors as hill_char, set tile ID to grass.
+
+    Matches shoreline-style export: perimeter keeps the hill legend ID; interior is grass/mesa
+    (same rule as paint_map_png HILL_INTERIOR_MASK).
+    """
+    if hill_char not in legend:
+        return rows
+    grass_id = _grass_tile_id_for_hill_interior(legend)
+    if grass_id is None:
+        return rows
+    height = len(lines)
+    width = max(len(row) for row in lines) if lines else 0
+
+    def is_hill(px: int, py: int) -> bool:
+        if py < 0 or py >= height or px < 0 or px >= width:
+            return False
+        line = lines[py]
+        ch = line[px] if px < len(line) else "."
+        return ch == hill_char
+
+    out = [list(r) for r in rows]
+    for y in range(height):
+        line = lines[y]
+        for x, ch in enumerate(line):
+            if ch != hill_char:
+                continue
+            if not (
+                is_hill(x, y - 1)
+                and is_hill(x + 1, y)
+                and is_hill(x, y + 1)
+                and is_hill(x - 1, y)
+            ):
+                continue
+            if y < len(out) and x < len(out[y]):
+                out[y][x] = grass_id
+    return out
+
+
 def resolve_tree_tile(
     row: int,
     col: int,
@@ -133,4 +186,4 @@ def to_tile_rows_with_trees(
             else:
                 row.append(legend[char])
         rows.append(row)
-    return rows
+    return apply_hill_interior_grass_tile_rows(rows, lines, legend)

@@ -438,9 +438,20 @@ def command_paint(args: argparse.Namespace) -> None:
                 dirt_path = dirt_sheet
 
             # Export hills .aseprite to PNG (dedicated hill tileset)
+            # sheet_columns must match your Aseprite grid so tile IDs 1,2,3… match row-major slices.
+            hill_sheet_columns: int | None = None
+            if terrain_cfg and isinstance(terrain_cfg.get("hill"), dict):
+                _sc = terrain_cfg["hill"].get("sheet_columns")
+                if isinstance(_sc, int) and _sc > 0:
+                    hill_sheet_columns = _sc
             if hill_aseprite_path is not None:
                 hill_sheet = tmp_path / "hill_sheet.png"
-                export_treeset_to_png(hill_aseprite_path, hill_sheet, aseprite_bin)
+                export_treeset_to_png(
+                    hill_aseprite_path,
+                    hill_sheet,
+                    aseprite_bin,
+                    sheet_columns=hill_sheet_columns or 6,
+                )
                 hill_path = hill_sheet
 
             # Parse grass tile range (e.g. "19-30")

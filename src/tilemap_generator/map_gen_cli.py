@@ -1361,7 +1361,11 @@ def place_clustered(
     rng: random.Random,
     blocked: set[Point],
     eligible: set[Point] | None = None,
+    *,
+    maintain_connectivity: bool = False,
 ) -> int:
+    """Place fill_char in clusters. When maintain_connectivity=True, fallback only adds
+    cells NESW-adjacent to existing placements (perimeter stays connected)."""
     if target_count <= 0:
         return 0
 
@@ -1408,7 +1412,31 @@ def place_clustered(
         if not expanded:
             frontier.pop(idx)
 
-    if placed < target_count:
+    if placed < target_count and maintain_connectivity:
+        # Only add from cells NESW-adjacent to existing fill_char (keep perimeter connected)
+        while placed < target_count:
+            adjacent = []
+            for x, y in all_positions(width, height):
+                if grid[y][x] != fill_char:
+                    continue
+                for nx, ny in neighbors4(x, y, width, height):
+                    if (
+                        grid[ny][nx] == GRASS_CHAR
+                        and (nx, ny) not in blocked
+                        and (eligible is None or (nx, ny) in eligible)
+                    ):
+                        adjacent.append((nx, ny))
+            if not adjacent:
+                break
+            rng.shuffle(adjacent)
+            for x, y in adjacent:
+                if placed >= target_count:
+                    break
+                if grid[y][x] == GRASS_CHAR:
+                    grid[y][x] = fill_char
+                    placed += 1
+
+    elif placed < target_count:
         available = [
             (x, y)
             for x, y in all_positions(width, height)
@@ -1422,6 +1450,37 @@ def place_clustered(
             placed += 1
 
     return placed
+
+
+def fill_hill_interior(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+) -> int:
+    """Fill grass holes inside hill formations. G with 4 I neighbors -> I.
+    Ensures solid hill blobs and a single connected perimeter. Returns cells filled."""
+    filled = 0
+    changed = True
+    while changed:
+        changed = False
+        to_fill: list[Point] = []
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x] != GRASS_CHAR:
+                    continue
+                n_hill = sum(
+                    1
+                    for nx, ny in neighbors4(x, y, width, height)
+                    if 0 <= nx < width and 0 <= ny < height and grid[ny][nx] == HILL_CHAR
+                )
+                if n_hill == 4:
+                    to_fill.append((x, y))
+        for x, y in to_fill:
+            if grid[y][x] == GRASS_CHAR:
+                grid[y][x] = HILL_CHAR
+                filled += 1
+                changed = True
+    return filled
 
 
 def pick_spread_points(candidates: list[Point], count: int, rng: random.Random) -> list[Point]:
@@ -1630,6 +1689,14 @@ def write_preview_layered(
     """Write a layered .aseprite preview with terrain separated into layers."""
     from PIL import Image
 
+    from tilemap_generator.paint_map_png import (
+        HILL_INTERIOR_MASK,
+        get_hill_adjacency_bitmask,
+    )
+
+    # Convert grid to list of strings for get_hill_adjacency_bitmask
+    ascii_lines = ["".join(row) if isinstance(row, (list, tuple)) else row for row in grid]
+
     if tile_size <= 0:
         raise ValueError("--preview-tile-size must be > 0")
     if not grid or not grid[0]:
@@ -1667,6 +1734,19 @@ def write_preview_layered(
                     # Shoreline: also draw P adjacent to water/shoreline (path on beach → reserve for shoreline)
                     if layer_name == "Shoreline" and ch == PATH_CHAR and _is_adjacent_to_water_or_shoreline(grid, tx, ty):
                         r, g, b = PREVIEW_COLORS[SHORELINE_CHAR]
+                    elif layer_name == "Hill" and ch == HILL_CHAR:
+                        # Interior hill (all 4 neighbors hills): grass, not hill cliff
+                        hmask = get_hill_adjacency_bitmask(ascii_lines, tx, ty)
+                        if hmask == HILL_INTERIOR_MASK:
+                            continue  # Don't draw on Hill layer; Grass will show through
+                        r, g, b = PREVIEW_COLORS[HILL_CHAR]
+                    elif layer_name == "Grass" and ch == HILL_CHAR:
+                        # Interior hill: draw as grass
+                        hmask = get_hill_adjacency_bitmask(ascii_lines, tx, ty)
+                        if hmask == HILL_INTERIOR_MASK:
+                            r, g, b = PREVIEW_COLORS[GRASS_CHAR]
+                        else:
+                            continue
                     elif ch not in chars:
                         continue
                     else:
@@ -2426,8 +2506,10 @@ def run_from_args(args: argparse.Namespace) -> None:
     )
     hill_target = min(int(round(total_tiles * getattr(args, "hill_density", 0.0))), hill_placeable)
     hill_placed = place_clustered(
-        grid, HILL_CHAR, hill_target, rng, hill_blocked, eligible=hill_eligible
+        grid, HILL_CHAR, hill_target, rng, hill_blocked, eligible=hill_eligible,
+        maintain_connectivity=True,
     )
+    hill_holes_filled = fill_hill_interior(grid, args.width, args.height)
 
     remaining_placeable = sum(
         1
@@ -2673,7 +2755,7 @@ def run_from_args(args: argparse.Namespace) -> None:
         f"spawns={len(spawn_points)}, joins={len(join_points)}, "
         f"dead_ends={len(dead_end_points)}, secret_npc={'1' if secret_npc_point else '0'}, "
         f"path_tiles={len(path_cells)}, mines={len(mine_points)}, shops={len(shop_points)}, "
-        f"creep_zones={len(creep_centers)}, water={water_placed}, hills={hill_placed}, "
+        f"creep_zones={len(creep_centers)}, water={water_placed}, hills={hill_placed + hill_holes_filled}, "
         f"forest={forest_placed}, trees={tree_placed}, path_width={path_width}"
     )
 
