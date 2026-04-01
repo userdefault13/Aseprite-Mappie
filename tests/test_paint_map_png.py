@@ -3,6 +3,14 @@ import unittest
 from tilemap_generator.paint_map_png import (
     HILL_MAP,
     _diagonal_inset_pattern_key_for_geometry,
+    _ne_inset_br_probe_one_row_above,
+    _ne_inset_tl_probe_one_column_left,
+    _sw_inset_br_probe_two_columns_left,
+    _sw_inset_tl_probe_two_rows_below,
+    _se_inset_bl_probe_one_column_left,
+    _se_inset_tr_probe_one_row_below,
+    _nw_inset_bl_probe_two_rows_above,
+    _nw_inset_tr_probe_two_columns_left,
     parse_hill_diagonal_inset_2x2_patterns,
     apply_hill_vertical_spine_tile_fix,
     apply_hill_diagonal_inset_neighbor_rules,
@@ -565,29 +573,29 @@ class HillVerticalRidgeSecondPassTests(unittest.TestCase):
 
 class HillHorizontalRidgeSecondPassTests(unittest.TestCase):
     def test_corners_without_mask10_neighbor(self) -> None:
-        d = 23
+        d = HILL_MAP[10]
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(2, 3, False, False, d), 6)
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(4, 5, False, False, d), 8)
 
     def test_ambiguous_both_mask10_stays_default(self) -> None:
-        d = 23
+        d = HILL_MAP[10]
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(d, d, True, True, d), d)
 
     def test_propagation_6_along_spine(self) -> None:
-        d = 23
+        d = HILL_MAP[10]
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(2, d, False, True, d), 6)
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(6, d, True, True, d), 6)
 
     def test_propagation_8_along_spine(self) -> None:
-        d = 23
+        d = HILL_MAP[10]
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(d, 5, True, False, d), 8)
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(d, 8, True, True, d), 8)
 
     def test_spine_middle_6_6(self) -> None:
-        self.assertEqual(resolve_hill_horizontal_ridge_tile_id(6, 6, True, True, 23), 6)
+        self.assertEqual(resolve_hill_horizontal_ridge_tile_id(6, 6, True, True, HILL_MAP[10]), 6)
 
     def test_spine_middle_8_8(self) -> None:
-        self.assertEqual(resolve_hill_horizontal_ridge_tile_id(8, 8, True, True, 23), 8)
+        self.assertEqual(resolve_hill_horizontal_ridge_tile_id(8, 8, True, True, HILL_MAP[10]), 8)
 
 
 class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
@@ -793,6 +801,190 @@ class HillDiagonalInsetPatternKeySwapTests(unittest.TestCase):
     def test_swap_disabled_is_identity(self) -> None:
         for o in ("nw", "ne", "sw", "se"):
             self.assertEqual(_diagonal_inset_pattern_key_for_geometry(o, swap_sw_ne=False, swap_nw_se=False), o)
+
+
+class SwInsetTlBrProbeTests(unittest.TestCase):
+    def test_tl_two_rows_below_grass(self) -> None:
+        # SW origin (1,0): TL (1,0); two rows below (1,2) = G
+        ascii_lines = [
+            "III",
+            "IGG",
+            "GGG",
+        ]
+        self.assertEqual(
+            _sw_inset_tl_probe_two_rows_below(ascii_lines, 1, 0, 3, 3, hill_char="I"),
+            "grass",
+        )
+
+    def test_tl_two_rows_below_hill(self) -> None:
+        ascii_lines = [
+            "III",
+            "IGG",
+            "GII",
+        ]
+        self.assertEqual(
+            _sw_inset_tl_probe_two_rows_below(ascii_lines, 1, 0, 3, 3, hill_char="I"),
+            "hill",
+        )
+
+    def test_br_two_columns_left_grass(self) -> None:
+        # SW origin (2,0): BR (3,1); two columns left (1,1) = G
+        ascii_lines = [
+            "IIII",
+            "IGGI",
+            "IIII",
+        ]
+        self.assertEqual(
+            _sw_inset_br_probe_two_columns_left(ascii_lines, 2, 0, 4, 2, hill_char="I"),
+            "grass",
+        )
+
+    def test_br_two_columns_left_hill(self) -> None:
+        ascii_lines = [
+            "IIII",
+            "IIGI",
+            "IIII",
+        ]
+        self.assertEqual(
+            _sw_inset_br_probe_two_columns_left(ascii_lines, 2, 0, 4, 2, hill_char="I"),
+            "hill",
+        )
+
+
+class SeInsetTrBlProbeTests(unittest.TestCase):
+    def test_tr_one_row_below_grass(self) -> None:
+        # SE origin (1,0): TR (2,0); one row below (2,1) = G
+        ascii_lines = [
+            "III",
+            "IGG",
+        ]
+        self.assertEqual(
+            _se_inset_tr_probe_one_row_below(ascii_lines, 1, 0, 3, 2, hill_char="I"),
+            "grass",
+        )
+
+    def test_tr_one_row_below_hill(self) -> None:
+        ascii_lines = [
+            "III",
+            "IGI",
+        ]
+        self.assertEqual(
+            _se_inset_tr_probe_one_row_below(ascii_lines, 1, 0, 3, 2, hill_char="I"),
+            "hill",
+        )
+
+    def test_bl_one_column_left_grass(self) -> None:
+        # SE origin (2,0): BL (2,1); one column left (1,1) = G
+        ascii_lines = [
+            "III",
+            "IGI",
+        ]
+        self.assertEqual(
+            _se_inset_bl_probe_one_column_left(ascii_lines, 2, 0, 3, 2, hill_char="I"),
+            "grass",
+        )
+
+    def test_bl_one_column_left_hill(self) -> None:
+        ascii_lines = [
+            "III",
+            "III",
+        ]
+        self.assertEqual(
+            _se_inset_bl_probe_one_column_left(ascii_lines, 2, 0, 3, 2, hill_char="I"),
+            "hill",
+        )
+
+
+class NwInsetTrBlProbeTests(unittest.TestCase):
+    def test_tr_two_columns_left_hill(self) -> None:
+        # NW origin (2,1): TR (3,1); two columns left (1,1) = I
+        ascii_lines = [
+            "III",
+            "III",
+        ]
+        self.assertEqual(
+            _nw_inset_tr_probe_two_columns_left(ascii_lines, 2, 1, 3, 2, hill_char="I"),
+            "hill",
+        )
+
+    def test_tr_two_columns_left_grass(self) -> None:
+        ascii_lines = [
+            "III",
+            "IGI",
+        ]
+        self.assertEqual(
+            _nw_inset_tr_probe_two_columns_left(ascii_lines, 2, 1, 3, 2, hill_char="I"),
+            "grass",
+        )
+
+    def test_bl_two_rows_above_hill(self) -> None:
+        # NW origin (2,2): BL (2,3); two rows above (2,1) = I
+        ascii_lines = [
+            "III",
+            "III",
+            "III",
+            "III",
+        ]
+        self.assertEqual(
+            _nw_inset_bl_probe_two_rows_above(ascii_lines, 2, 2, 3, 4, hill_char="I"),
+            "hill",
+        )
+
+    def test_bl_two_rows_above_grass(self) -> None:
+        ascii_lines = [
+            "III",
+            "IIG",
+            "III",
+            "III",
+        ]
+        self.assertEqual(
+            _nw_inset_bl_probe_two_rows_above(ascii_lines, 2, 2, 3, 4, hill_char="I"),
+            "grass",
+        )
+
+
+class NeInsetTlBrProbeTests(unittest.TestCase):
+    def test_br_one_row_above_grass(self) -> None:
+        # NE origin (1,0): BR (2,1); one row above (2,0) = TR row — grass
+        ascii_lines = [
+            "IGG",
+            "IGG",
+        ]
+        self.assertEqual(
+            _ne_inset_br_probe_one_row_above(ascii_lines, 1, 0, 3, 2, hill_char="I"),
+            "grass",
+        )
+
+    def test_br_one_row_above_hill(self) -> None:
+        ascii_lines = [
+            "III",
+            "IGG",
+        ]
+        self.assertEqual(
+            _ne_inset_br_probe_one_row_above(ascii_lines, 1, 0, 3, 2, hill_char="I"),
+            "hill",
+        )
+
+    def test_tl_one_column_left_hill(self) -> None:
+        # NE origin (1,1): TL (1,1); one column left (0,1) = I
+        ascii_lines = [
+            "III",
+            "III",
+        ]
+        self.assertEqual(
+            _ne_inset_tl_probe_one_column_left(ascii_lines, 1, 1, 3, 2, hill_char="I"),
+            "hill",
+        )
+
+    def test_tl_one_column_left_grass(self) -> None:
+        ascii_lines = [
+            "III",
+            "GII",
+        ]
+        self.assertEqual(
+            _ne_inset_tl_probe_one_column_left(ascii_lines, 1, 1, 3, 2, hill_char="I"),
+            "grass",
+        )
 
 
 class HillDiagonalInset2x2PatternParseTests(unittest.TestCase):

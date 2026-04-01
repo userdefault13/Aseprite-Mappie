@@ -118,6 +118,155 @@ def _diagonal_inset_pattern_key_for_geometry(
     return geometry_orient
 
 
+def _inset_overlay_probe_grass_or_hill(
+    ascii_lines: list[str],
+    cx: int,
+    cy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """Return ``\"grass\"``, ``\"hill\"``, or ``None`` (OOB, water, or other terrain)."""
+    if not (0 <= cx < width and 0 <= cy < height):
+        return None
+    row = ascii_lines[cy]
+    ch = row[cx] if cx < len(row) else "."
+    if ch in WATER_CHARS:
+        return None
+    if ch in ("G", "."):
+        return "grass"
+    if ch == hill_char:
+        return "hill"
+    return None
+
+
+def _ne_inset_br_probe_one_row_above(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """NE 2×2 origin ``(oxx, oyy)``: BR at ``(oxx+1, oyy+1)``; sample one row above BR (same column as TR)."""
+    br_x, br_y = oxx + 1, oyy + 1
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, br_x, br_y - 1, width, height, hill_char=hill_char
+    )
+
+
+def _ne_inset_tl_probe_one_column_left(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """NE 2×2 origin ``(oxx, oyy)``: TL at ``(oxx, oyy)``; sample one column left of TL (hill west of TL)."""
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, oxx - 1, oyy, width, height, hill_char=hill_char
+    )
+
+
+def _sw_inset_tl_probe_two_rows_below(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """SW 2×2 origin ``(oxx, oyy)``: TL at ``(oxx, oyy)``; sample two rows below TL."""
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, oxx, oyy + 2, width, height, hill_char=hill_char
+    )
+
+
+def _sw_inset_br_probe_two_columns_left(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """SW 2×2 origin ``(oxx, oyy)``: BR at ``(oxx+1, oyy+1)``; sample two columns left of BR."""
+    br_x, br_y = oxx + 1, oyy + 1
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, br_x - 2, br_y, width, height, hill_char=hill_char
+    )
+
+
+def _se_inset_tr_probe_one_row_below(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """SE 2×2 origin ``(oxx, oyy)``: TR at ``(oxx+1, oyy)``; sample one row below TR."""
+    tr_x, tr_y = oxx + 1, oyy
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, tr_x, tr_y + 1, width, height, hill_char=hill_char
+    )
+
+
+def _se_inset_bl_probe_one_column_left(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """SE 2×2 origin ``(oxx, oyy)``: BL at ``(oxx, oyy+1)``; sample one column left of BL."""
+    bl_x, bl_y = oxx, oyy + 1
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, bl_x - 1, bl_y, width, height, hill_char=hill_char
+    )
+
+
+def _nw_inset_tr_probe_two_columns_left(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """NW 2×2 origin ``(oxx, oyy)``: TR at ``(oxx+1, oyy)``; sample two columns left of TR."""
+    tr_x, tr_y = oxx + 1, oyy
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, tr_x - 2, tr_y, width, height, hill_char=hill_char
+    )
+
+
+def _nw_inset_bl_probe_two_rows_above(
+    ascii_lines: list[str],
+    oxx: int,
+    oyy: int,
+    width: int,
+    height: int,
+    *,
+    hill_char: str = "I",
+) -> str | None:
+    """NW 2×2 origin ``(oxx, oyy)``: BL at ``(oxx, oyy+1)``; sample two rows above BL."""
+    bl_x, bl_y = oxx, oyy + 1
+    return _inset_overlay_probe_grass_or_hill(
+        ascii_lines, bl_x, bl_y - 2, width, height, hill_char=hill_char
+    )
+
+
 def _paint_hill_diagonal_inset_2x2_overlays(
     ascii_lines: list[str],
     grass_inset: list[list[int | None]],
@@ -134,6 +283,30 @@ def _paint_hill_diagonal_inset_2x2_overlays(
     hill_layer: Any,
     swap_sw_ne_patterns: bool = True,
     swap_nw_se_patterns: bool = True,
+    ne_br_one_row_above_override: bool = True,
+    ne_br_one_row_above_grass_tile: int = 4,
+    ne_br_one_row_above_hill_tile: int = 9,
+    ne_tl_hill_left_override: bool = True,
+    ne_tl_hill_left_tile: int = 8,
+    sw_tl_two_rows_below_override: bool = True,
+    sw_tl_two_rows_below_grass_tile: int = 7,
+    sw_tl_two_rows_below_hill_tile: int = 3,
+    sw_br_two_columns_left_override: bool = True,
+    sw_br_two_columns_left_grass_tile: int = 3,
+    sw_br_two_columns_left_hill_tile: int = 6,
+    se_tr_one_row_below_override: bool = True,
+    se_tr_one_row_below_grass_tile: int = 9,
+    se_tr_one_row_below_hill_tile: int = 2,
+    se_bl_one_column_left_override: bool = True,
+    se_bl_one_column_left_hill_tile: int = 6,
+    se_bl_one_column_left_grass_tile: int = 2,
+    nw_tr_two_columns_left_override: bool = True,
+    nw_tr_two_columns_left_hill_tile: int = 8,
+    nw_tr_two_columns_left_grass_tile: int = 5,
+    nw_bl_two_rows_above_override: bool = True,
+    nw_bl_two_rows_above_hill_tile: int = 7,
+    nw_bl_two_rows_above_grass_tile: int = 5,
+    hill_char: str = "I",
 ) -> None:
     """Paste configured 2×2 hill/grass tiles over the normal hill layer at diagonal inset sites."""
     if hill_layer is None or not grass_hill:
@@ -183,7 +356,69 @@ def _paint_hill_diagonal_inset_2x2_overlays(
                 if ch in WATER_CHARS:
                     continue
                 tid = pat.get(pname)
-                if tid is None:
+                if orient == "sw" and pname == "tl" and sw_tl_two_rows_below_override:
+                    probe = _sw_inset_tl_probe_two_rows_below(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "grass":
+                        tid = sw_tl_two_rows_below_grass_tile
+                    elif probe == "hill":
+                        tid = sw_tl_two_rows_below_hill_tile
+                elif orient == "sw" and pname == "br" and sw_br_two_columns_left_override:
+                    probe = _sw_inset_br_probe_two_columns_left(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "grass":
+                        tid = sw_br_two_columns_left_grass_tile
+                    elif probe == "hill":
+                        tid = sw_br_two_columns_left_hill_tile
+                elif orient == "se" and pname == "tr" and se_tr_one_row_below_override:
+                    probe = _se_inset_tr_probe_one_row_below(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "grass":
+                        tid = se_tr_one_row_below_grass_tile
+                    elif probe == "hill":
+                        tid = se_tr_one_row_below_hill_tile
+                elif orient == "se" and pname == "bl" and se_bl_one_column_left_override:
+                    probe = _se_inset_bl_probe_one_column_left(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "hill":
+                        tid = se_bl_one_column_left_hill_tile
+                    elif probe == "grass":
+                        tid = se_bl_one_column_left_grass_tile
+                elif orient == "nw" and pname == "tr" and nw_tr_two_columns_left_override:
+                    probe = _nw_inset_tr_probe_two_columns_left(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "hill":
+                        tid = nw_tr_two_columns_left_hill_tile
+                    elif probe == "grass":
+                        tid = nw_tr_two_columns_left_grass_tile
+                elif orient == "nw" and pname == "bl" and nw_bl_two_rows_above_override:
+                    probe = _nw_inset_bl_probe_two_rows_above(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "hill":
+                        tid = nw_bl_two_rows_above_hill_tile
+                    elif probe == "grass":
+                        tid = nw_bl_two_rows_above_grass_tile
+                elif orient == "ne" and pname == "tl" and ne_tl_hill_left_override:
+                    probe = _ne_inset_tl_probe_one_column_left(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "hill":
+                        tid = ne_tl_hill_left_tile
+                elif orient == "ne" and pname == "br" and ne_br_one_row_above_override:
+                    probe = _ne_inset_br_probe_one_row_above(
+                        ascii_lines, oxx, oyy, width, height, hill_char=hill_char
+                    )
+                    if probe == "grass":
+                        tid = ne_br_one_row_above_grass_tile
+                    elif probe == "hill":
+                        tid = ne_br_one_row_above_hill_tile
+                elif tid is None:
                     continue
                 if not isinstance(tid, int) or tid < 1:
                     continue
@@ -487,7 +722,7 @@ INTERIOR_CORNER_MASKS = (3, 6, 9, 12)  # N+E, S+E, N+W, S+W
 # Mask 15: four-way connector (tile 14) when not "deep interior"; deep interior = grass only (no hill layer).
 HILL_INTERIOR_MASK = 15  # N+E+S+W all hills (raw adjacency)
 # Cardinals 1,2,4,8 = peninsula ends (one open side): N→12, E→11, S→10, W→13 per reference layout.
-# Ridges: 5=N+S→9 (vertical spine default), 10=E+W→23. Three-open: 7→28, 11→32, 13→30, 14→26.
+# Ridges: 5=N+S→9 (vertical spine default), 10=E+W→8. Three-open: 7→28, 11→32, 13→30, 14→26.
 HILL_MAP: dict[int, int] = {
     0: 1,    # isolated
     1: 12,   # N only — north peninsula (grass to S)
@@ -499,7 +734,7 @@ HILL_MAP: dict[int, int] = {
     7: 28,   # N+E+S, W open
     8: 13,   # W only — west peninsula
     9: 5,    # N+W outer corner
-    10: 23,  # E+W ridge (horizontal)
+    10: 8,  # E+W ridge (horizontal)
     11: 32,  # N+E+W, S open
     12: 3,   # S+W corner (NE corner piece)
     13: 30,  # N+S+W, E open
@@ -2357,10 +2592,10 @@ def resolve_hill_mask15_protrusion_tile_id(
     te = base_at(x + 1, y)
     tw = base_at(x - 1, y)
 
-    nw_set = frozenset({12, 13, 23, 24})
-    ne_set = frozenset({11, 12, 23, 24})
-    sw_set = frozenset({10, 13, 23, 24})
-    se_set = frozenset({10, 11, 23, 24})
+    nw_set = frozenset({8, 12, 13, 23, 24})
+    ne_set = frozenset({8, 11, 12, 23, 24})
+    sw_set = frozenset({8, 10, 13, 23, 24})
+    se_set = frozenset({8, 10, 11, 23, 24})
 
     if tn is not None and tw is not None and tn in nw_set and tw in nw_set:
         return 15
@@ -2778,6 +3013,75 @@ def paint_map_to_png(
     # SW/NE 2×2 art blocks are often authored with keys swapped vs engine geometry; default on.
     hill_diagonal_inset_swap_sw_ne = bool(_hill_cfg.get("diagonal_inset_swap_sw_ne", True))
     hill_diagonal_inset_swap_nw_se = bool(_hill_cfg.get("diagonal_inset_swap_nw_se", True))
+    hill_diagonal_inset_ne_br_one_row_above_override = bool(
+        _hill_cfg.get("diagonal_inset_ne_br_one_row_above_override", True)
+    )
+    hill_diagonal_inset_ne_br_one_row_above_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_ne_br_one_row_above_grass_tile", 4)
+    )
+    hill_diagonal_inset_ne_br_one_row_above_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_ne_br_one_row_above_hill_tile", 9)
+    )
+    hill_diagonal_inset_ne_tl_hill_left_override = bool(
+        _hill_cfg.get("diagonal_inset_ne_tl_hill_left_override", True)
+    )
+    hill_diagonal_inset_ne_tl_hill_left_tile = int(
+        _hill_cfg.get("diagonal_inset_ne_tl_hill_left_tile", 8)
+    )
+    hill_diagonal_inset_sw_tl_two_rows_below_override = bool(
+        _hill_cfg.get("diagonal_inset_sw_tl_two_rows_below_override", True)
+    )
+    hill_diagonal_inset_sw_tl_two_rows_below_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_sw_tl_two_rows_below_grass_tile", 7)
+    )
+    hill_diagonal_inset_sw_tl_two_rows_below_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_sw_tl_two_rows_below_hill_tile", 3)
+    )
+    hill_diagonal_inset_sw_br_two_columns_left_override = bool(
+        _hill_cfg.get("diagonal_inset_sw_br_two_columns_left_override", True)
+    )
+    hill_diagonal_inset_sw_br_two_columns_left_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_sw_br_two_columns_left_grass_tile", 3)
+    )
+    hill_diagonal_inset_sw_br_two_columns_left_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_sw_br_two_columns_left_hill_tile", 6)
+    )
+    hill_diagonal_inset_se_tr_one_row_below_override = bool(
+        _hill_cfg.get("diagonal_inset_se_tr_one_row_below_override", True)
+    )
+    hill_diagonal_inset_se_tr_one_row_below_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_se_tr_one_row_below_grass_tile", 9)
+    )
+    hill_diagonal_inset_se_tr_one_row_below_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_se_tr_one_row_below_hill_tile", 2)
+    )
+    hill_diagonal_inset_se_bl_one_column_left_override = bool(
+        _hill_cfg.get("diagonal_inset_se_bl_one_column_left_override", True)
+    )
+    hill_diagonal_inset_se_bl_one_column_left_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_se_bl_one_column_left_hill_tile", 6)
+    )
+    hill_diagonal_inset_se_bl_one_column_left_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_se_bl_one_column_left_grass_tile", 2)
+    )
+    hill_diagonal_inset_nw_tr_two_columns_left_override = bool(
+        _hill_cfg.get("diagonal_inset_nw_tr_two_columns_left_override", True)
+    )
+    hill_diagonal_inset_nw_tr_two_columns_left_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_nw_tr_two_columns_left_hill_tile", 8)
+    )
+    hill_diagonal_inset_nw_tr_two_columns_left_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_nw_tr_two_columns_left_grass_tile", 5)
+    )
+    hill_diagonal_inset_nw_bl_two_rows_above_override = bool(
+        _hill_cfg.get("diagonal_inset_nw_bl_two_rows_above_override", True)
+    )
+    hill_diagonal_inset_nw_bl_two_rows_above_hill_tile = int(
+        _hill_cfg.get("diagonal_inset_nw_bl_two_rows_above_hill_tile", 7)
+    )
+    hill_diagonal_inset_nw_bl_two_rows_above_grass_tile = int(
+        _hill_cfg.get("diagonal_inset_nw_bl_two_rows_above_grass_tile", 5)
+    )
     extended_masks = tuple(cfg.get("extended_shoreline_masks") or EXTENDED_SHORELINE_MASKS)
     river_masks = tuple(cfg.get("river_masks") or RIVER_MASKS)
     interior_corner_masks = tuple(cfg.get("interior_corner_masks") or INTERIOR_CORNER_MASKS)
@@ -3220,7 +3524,7 @@ def paint_map_to_png(
                     base_hill_tile_ids[hy][hx] = resolve_hill_autotile_tile_id(
                         ascii_lines, hx, hy, hill_map, hill_char="I"
                     )
-        default_ridge_h = hill_map.get(10, 23)
+        default_ridge_h = hill_map.get(10, 8)
         hill_chr = "I"
 
         def _neighbor_is_horizontal_ridge(px: int, py: int) -> bool:
@@ -4453,6 +4757,30 @@ def paint_map_to_png(
             hill_layer=hill_layer,
             swap_sw_ne_patterns=hill_diagonal_inset_swap_sw_ne,
             swap_nw_se_patterns=hill_diagonal_inset_swap_nw_se,
+            ne_br_one_row_above_override=hill_diagonal_inset_ne_br_one_row_above_override,
+            ne_br_one_row_above_grass_tile=hill_diagonal_inset_ne_br_one_row_above_grass_tile,
+            ne_br_one_row_above_hill_tile=hill_diagonal_inset_ne_br_one_row_above_hill_tile,
+            ne_tl_hill_left_override=hill_diagonal_inset_ne_tl_hill_left_override,
+            ne_tl_hill_left_tile=hill_diagonal_inset_ne_tl_hill_left_tile,
+            sw_tl_two_rows_below_override=hill_diagonal_inset_sw_tl_two_rows_below_override,
+            sw_tl_two_rows_below_grass_tile=hill_diagonal_inset_sw_tl_two_rows_below_grass_tile,
+            sw_tl_two_rows_below_hill_tile=hill_diagonal_inset_sw_tl_two_rows_below_hill_tile,
+            sw_br_two_columns_left_override=hill_diagonal_inset_sw_br_two_columns_left_override,
+            sw_br_two_columns_left_grass_tile=hill_diagonal_inset_sw_br_two_columns_left_grass_tile,
+            sw_br_two_columns_left_hill_tile=hill_diagonal_inset_sw_br_two_columns_left_hill_tile,
+            se_tr_one_row_below_override=hill_diagonal_inset_se_tr_one_row_below_override,
+            se_tr_one_row_below_grass_tile=hill_diagonal_inset_se_tr_one_row_below_grass_tile,
+            se_tr_one_row_below_hill_tile=hill_diagonal_inset_se_tr_one_row_below_hill_tile,
+            se_bl_one_column_left_override=hill_diagonal_inset_se_bl_one_column_left_override,
+            se_bl_one_column_left_hill_tile=hill_diagonal_inset_se_bl_one_column_left_hill_tile,
+            se_bl_one_column_left_grass_tile=hill_diagonal_inset_se_bl_one_column_left_grass_tile,
+            nw_tr_two_columns_left_override=hill_diagonal_inset_nw_tr_two_columns_left_override,
+            nw_tr_two_columns_left_hill_tile=hill_diagonal_inset_nw_tr_two_columns_left_hill_tile,
+            nw_tr_two_columns_left_grass_tile=hill_diagonal_inset_nw_tr_two_columns_left_grass_tile,
+            nw_bl_two_rows_above_override=hill_diagonal_inset_nw_bl_two_rows_above_override,
+            nw_bl_two_rows_above_hill_tile=hill_diagonal_inset_nw_bl_two_rows_above_hill_tile,
+            nw_bl_two_rows_above_grass_tile=hill_diagonal_inset_nw_bl_two_rows_above_grass_tile,
+            hill_char="I",
         )
 
     water_layer.save(water_out)
