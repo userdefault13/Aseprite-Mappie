@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+from tilemap_generator.hill_topology import apply_grass_hill_cliffline_repair
+
 
 GRASS_CHAR = "G"
 SHORELINE_CHAR = "B"  # Beach: grass adjacent to ocean 2-tile border (tiles 98-118)
@@ -941,6 +943,50 @@ def dilate_cells(cells: set[Point], radius: int, width: int, height: int) -> set
                     continue
                 out.add((x, y))
     return out
+
+
+# Path (dirt): no P in 8-neighborhood of shore, water, hills, or trees (min 1 tile buffer).
+PATH_NEIGHBOR_FORBIDDEN_CHARS = frozenset(
+    {SHORELINE_CHAR, LAKE_SHORELINE_CHAR, RIVER_CHAR, HILL_CHAR, TREE_CHAR, FOREST_CHAR}
+    | WATER_CHARS
+)
+
+
+def demote_paths_adjacent_to_forbidden_neighbors(
+    grid: list[list[str]],
+    width: int,
+    height: int,
+    path_cells: set[Point],
+) -> None:
+    """Convert P to G if any 8-neighbor is shoreline, water, hill, or tree."""
+    to_demote: list[Point] = []
+    for y in range(height):
+        for x in range(width):
+            if grid[y][x] != PATH_CHAR:
+                continue
+            bad = False
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if nx < 0 or nx >= width or ny < 0 or ny >= height:
+                        continue
+                    if grid[ny][nx] in PATH_NEIGHBOR_FORBIDDEN_CHARS:
+                        bad = True
+                        break
+                if bad:
+                    break
+            if bad:
+                to_demote.append((x, y))
+    for x, y in to_demote:
+        grid[y][x] = GRASS_CHAR
+        path_cells.discard((x, y))
+
+
+def collect_path_cells_from_grid(grid: list[list[str]], width: int, height: int) -> set[Point]:
+    """All (x,y) where grid[y][x] is path dirt."""
+    return {(x, y) for y in range(height) for x in range(width) if grid[y][x] == PATH_CHAR}
 
 
 def place_spawn_points(
@@ -2457,22 +2503,6 @@ def run_from_args(args: argparse.Namespace) -> None:
     )
 
     terrain_blocked = protected_cells | set(path_cells)
-
-    # Dirt rule: convert P within 1 tile of shoreline to G (per terrain rules)
-    # Rule: grass cannot be placed on water
-    shoreline_all = continent_shore | lake_shore | river_bank
-    for x, y in list(all_positions(args.width, args.height)):
-        if grid[y][x] != PATH_CHAR:
-            continue
-        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < args.width and 0 <= ny < args.height and (nx, ny) in shoreline_all:
-                if grid[y][x] not in WATER_CHARS:
-                    grid[y][x] = GRASS_CHAR
-                    path_cells.discard((x, y))
-                break
-
-    terrain_blocked = protected_cells | set(path_cells)
     water_cells = {
         (x, y)
         for x, y in all_positions(args.width, args.height)
@@ -2510,6 +2540,7 @@ def run_from_args(args: argparse.Namespace) -> None:
         maintain_connectivity=True,
     )
     hill_holes_filled = fill_hill_interior(grid, args.width, args.height)
+    hill_cliffline_swaps = apply_grass_hill_cliffline_repair(grid, args.width, args.height)
 
     remaining_placeable = sum(
         1
@@ -2611,6 +2642,10 @@ def run_from_args(args: argparse.Namespace) -> None:
     if secret_npc_point is not None:
         grid[secret_npc_point[1]][secret_npc_point[0]] = SECRET_NPC_CHAR
 
+    # Dirt (P): no path tile 8-adjacent to shore, water, hill, or tree (terrain rules).
+    demote_paths_adjacent_to_forbidden_neighbors(grid, args.width, args.height, path_cells)
+    terrain_blocked = protected_cells | set(path_cells)
+
     border_width = 2  # Min 2-tile border for both modes
     if is_island:
         water_border = max(border_width, args.water_border_width)
@@ -2635,6 +2670,12 @@ def run_from_args(args: argparse.Namespace) -> None:
     else:
         # Continent mode: 2-tile land-with-trees border
         grid = wrap_with_land_border(grid, border_width, rng, tree_fraction=0.7)
+
+    # After wrap: new ocean/lake shore or tree border may touch paths; re-sync path set from grid.
+    h_final = len(grid)
+    w_final = len(grid[0]) if grid else 0
+    path_cells = collect_path_cells_from_grid(grid, w_final, h_final)
+    demote_paths_adjacent_to_forbidden_neighbors(grid, w_final, h_final, path_cells)
 
     out_path = Path(args.out)
     legend_path = Path(args.legend_out) if args.legend_out else out_path.with_suffix(".legend.json")
@@ -2755,7 +2796,8 @@ def run_from_args(args: argparse.Namespace) -> None:
         f"spawns={len(spawn_points)}, joins={len(join_points)}, "
         f"dead_ends={len(dead_end_points)}, secret_npc={'1' if secret_npc_point else '0'}, "
         f"path_tiles={len(path_cells)}, mines={len(mine_points)}, shops={len(shop_points)}, "
-        f"creep_zones={len(creep_centers)}, water={water_placed}, hills={hill_placed + hill_holes_filled}, "
+        f"creep_zones={len(creep_centers)}, water={water_placed}, "
+        f"hills={hill_placed + hill_holes_filled}, hill_cliffline_swaps={hill_cliffline_swaps}, "
         f"forest={forest_placed}, trees={tree_placed}, path_width={path_width}"
     )
 

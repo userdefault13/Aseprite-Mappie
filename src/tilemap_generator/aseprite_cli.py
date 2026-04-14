@@ -524,6 +524,7 @@ def command_paint(args: argparse.Namespace) -> None:
                 shoreline_out=shoreline_out,
                 lakebank_out=lakebank_out,
                 hill_out=hill_png,
+                hill_json_out=ascii_path.with_suffix(".hill.json"),
                 grass_dir=grass_dir,
                 grass_sheet_path=grass_sheet_path,
                 grass_tile_range=grass_tile_range,

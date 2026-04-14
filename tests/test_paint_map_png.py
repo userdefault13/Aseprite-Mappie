@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from tilemap_generator.paint_map_png import (
     HILL_MAP,
@@ -6,15 +7,24 @@ from tilemap_generator.paint_map_png import (
     _ne_inset_br_probe_one_row_above,
     _ne_inset_tl_probe_one_column_left,
     _sw_inset_br_probe_two_columns_left,
+    _sw_inset_turn_east_from_grass_notch,
     _sw_inset_tl_probe_two_rows_below,
     _se_inset_bl_probe_one_column_left,
     _se_inset_tr_probe_one_row_below,
     _nw_inset_bl_probe_two_rows_above,
     _nw_inset_tr_probe_two_columns_left,
     parse_hill_diagonal_inset_2x2_patterns,
+    apply_hill_mask11_tee_neighbor_gate,
+    apply_hill_peninsula_protrusion_adjacent_pass,
+    apply_hill_peninsula_vertical_spine_pass,
+    resolve_hill_peninsula_n_junction_tile_id,
     apply_hill_vertical_spine_tile_fix,
     apply_hill_diagonal_inset_neighbor_rules,
+    apply_hill_peninsula_post_inset_tile_restore_pass,
+    collect_hill_raw_peninsula_tip_tile_snapshot,
     resolve_hill_horizontal_ridge_tile_id,
+    resolve_hill_mask11_corner_extension_connect_tile_id,
+    resolve_hill_mask14_n_peninsula_connector_tile_id,
     resolve_hill_vertical_ridge_tile_id,
     LAKE_WATER_CHARS,
     _lake_mask_with_diagonal_inference,
@@ -23,6 +33,7 @@ from tilemap_generator.paint_map_png import (
     close_ocean_shoreline_gaps,
     filter_isolated_lake_shoreline,
     count_adjacent_shoreline_cells,
+    compute_hill_autotile_mask,
     get_hill_adjacency_bitmask,
     get_water_adjacency_bitmask,
     get_water_adjacency_with_type,
@@ -33,6 +44,7 @@ from tilemap_generator.paint_map_png import (
     resolve_center_ocean_inset_tile,
     resolve_bottom_ocean_inset_tile,
     resolve_hill_autotile_tile_id,
+    hill_mask5_vertical_spine_open_diagonals_for_tile24,
 )
 
 
@@ -498,6 +510,90 @@ class LakeWaterCharsMaskTests(unittest.TestCase):
 class HillAutotileInteriorExclusionTests(unittest.TestCase):
     """Rim tiles should not see fully surrounded I as cliff neighbors (fill_hill_interior case)."""
 
+    def test_mask5_all_diagonals_grass_uses_tile24(self) -> None:
+        # N+S ridge; E/W grass; all four diagonals in-bounds and grass-like -> 24 not 9
+        lines = ["GIG", "GIG", "GIG"]
+        self.assertTrue(hill_mask5_vertical_spine_open_diagonals_for_tile24(lines, 1, 1, hill_char="I"))
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 1, 1, HILL_MAP), 24)
+
+    def test_mask5_diagonal_hill_stays_tile9(self) -> None:
+        lines = ["GIG", "GIG", "IIG"]
+        self.assertFalse(hill_mask5_vertical_spine_open_diagonals_for_tile24(lines, 1, 1, hill_char="I"))
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 1, 1, HILL_MAP), HILL_MAP[5])
+
+    def test_outer_corner_es_when_both_neighbors_interior_uses_mask6_tile(self) -> None:
+        """NW grass notch: N+W open, E+S are I (both mesa interior). Must stay mask 6 / hill_map[6].
+
+        Interior exclusion used to drop both cardinals → wrong peninsula or isolated tile instead of
+        E+S outer corner (user sheet may map mask 6 → tile 5; default HILL_MAP[6] is 2).
+        """
+        lines = [
+            "GGGGG",
+            "GGGII",
+            "GGIII",
+            "GIIII",
+            "GIIII",
+        ]
+        self.assertEqual(compute_hill_autotile_mask(lines, 2, 2, hill_char="I"), 6)
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 2, 2, HILL_MAP), HILL_MAP[6])
+
+    def test_two_wide_vertical_strip_middle_uses_spine_9_and_7(self) -> None:
+        # 2×5 II pill: outer faces are mask 7 / 13 — spine cliffs 9 / 7, not tee 28/30
+        lines = [
+            "GIIG",
+            "GIIG",
+            "GIIG",
+            "GIIG",
+            "GIIG",
+        ]
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 1, 2, HILL_MAP), HILL_MAP[5])
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 2, 2, HILL_MAP), 7)
+
+    def test_three_wide_left_column_is_mask5_not_two_wide_strip_pair(self) -> None:
+        # 3 columns: east neighbor is interior I (excluded) → autotile mask 5, not 7+13 pair
+        lines = [
+            "GIIIIG",
+            "GIIIIG",
+            "GIIIIG",
+        ]
+        from tilemap_generator.paint_map_png import compute_hill_autotile_mask, hill_two_wide_vertical_strip_spine_tile_id
+
+        h = compute_hill_autotile_mask(lines, 1, 1, hill_char="I")
+        self.assertEqual(h, 5)
+        self.assertIsNone(hill_two_wide_vertical_strip_spine_tile_id(lines, 1, 1, h, HILL_MAP))
+
+    def test_three_wide_plateau_rim_mask5_cliff_faces_from_raw_cardinals(self) -> None:
+        # Interior-excluded mask 5 on both vertical rims; raw W vs E still picks stable 9 / 7.
+        lines = [
+            "GIIIIG",
+            "GIIIIG",
+            "GIIIIG",
+        ]
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 1, 1, HILL_MAP), 9)
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 4, 1, HILL_MAP), 7)
+
+    def test_two_row_horizontal_strip_middle_uses_spine_6_and_8(self) -> None:
+        # n×2 II pill (2 rows): top/bottom faces are mask 14 / 11 — ridge 6 / 8, not tee 26/32
+        lines = [
+            "GGIIIII",
+            "GGIIIII",
+        ]
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 3, 0, HILL_MAP), 6)
+        self.assertEqual(resolve_hill_autotile_tile_id(lines, 3, 1, HILL_MAP), 8)
+
+    def test_three_tall_top_row_not_two_row_strip_spine(self) -> None:
+        # 3 rows: S neighbor is interior (excluded) → autotile mask 10, not 14+11 pair
+        lines = [
+            "GIIIIIG",
+            "GIIIIIG",
+            "GIIIIIG",
+        ]
+        from tilemap_generator.paint_map_png import compute_hill_autotile_mask, hill_two_wide_horizontal_strip_spine_tile_id
+
+        h = compute_hill_autotile_mask(lines, 3, 0, hill_char="I")
+        self.assertEqual(h, 10)
+        self.assertIsNone(hill_two_wide_horizontal_strip_spine_tile_id(lines, 3, 0, h, HILL_MAP))
+
     def test_rim_top_mid_raw_tee_excl_ridge(self) -> None:
         lines = ["III", "III", "III"]
         raw = get_hill_adjacency_bitmask(lines, 1, 0)
@@ -598,9 +694,390 @@ class HillHorizontalRidgeSecondPassTests(unittest.TestCase):
         self.assertEqual(resolve_hill_horizontal_ridge_tile_id(8, 8, True, True, HILL_MAP[10]), 8)
 
 
+class HillPeninsulaVerticalSpineTests(unittest.TestCase):
+    def test_junction_both_side_caps_tile_6(self) -> None:
+        t = resolve_hill_peninsula_n_junction_tile_id(
+            True,
+            True,
+            6,
+            6,
+            bulk_e=True,
+            bulk_w=True,
+        )
+        self.assertEqual(t, 16)
+
+    def test_junction_e_cap_only(self) -> None:
+        self.assertEqual(
+            resolve_hill_peninsula_n_junction_tile_id(
+                True,
+                False,
+                6,
+                None,
+                bulk_e=True,
+                bulk_w=False,
+            ),
+            15,
+        )
+
+    def test_junction_bulk_e_only_no_cap(self) -> None:
+        self.assertEqual(
+            resolve_hill_peninsula_n_junction_tile_id(
+                True,
+                False,
+                8,
+                None,
+                bulk_e=True,
+                bulk_w=False,
+            ),
+            15,
+        )
+
+    @patch(
+        "tilemap_generator.paint_map_png.hill_mask5_vertical_spine_open_diagonals_for_tile24",
+        return_value=False,
+    )
+    def test_extension_along_mask5_from_n_tip(self, _mock_tile24: object) -> None:
+        # y=1 mask4 top, y=2–3 mask5 spine, y=4 mask1 bottom tip (column x=2).
+        lines = [
+            "GGGGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGGGGG",
+        ]
+        w, h = 6, 6
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 9
+        base[4][2] = HILL_MAP[1]
+        base[1][2] = HILL_MAP[4]
+        apply_hill_peninsula_vertical_spine_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[2][2], 24)
+        self.assertEqual(base[3][2], 24)
+
+    @patch(
+        "tilemap_generator.paint_map_png.hill_mask5_vertical_spine_open_diagonals_for_tile24",
+        return_value=False,
+    )
+    def test_mask7_junction_overwrites_with_tee_e(self, _mock_tile24: object) -> None:
+        import tilemap_generator.paint_map_png as pmp
+
+        lines = [
+            "GGGGGG",
+            "GGIGGG",
+            "GGIIGG",
+            "GGIGGG",
+            "GGGGGG",
+        ]
+        w, h = 6, 5
+        _real_mask = pmp.compute_hill_autotile_mask
+
+        def _mask(lines_in: list[str], x: int, y: int, hill_char: str = "I") -> int:
+            if (x, y) == (2, 2):
+                return 7
+            if (x, y) == (2, 3):
+                return 1
+            return _real_mask(lines_in, x, y, hill_char=hill_char)
+
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 9
+        base[2][2] = HILL_MAP[7]
+        base[2][3] = 8
+        base[3][2] = HILL_MAP[1]
+        with patch.object(pmp, "compute_hill_autotile_mask", side_effect=_mask):
+            pmp.apply_hill_peninsula_vertical_spine_pass(
+                lines, base, w, h, HILL_MAP, hill_char="I"
+            )
+        self.assertEqual(base[2][2], 15)
+
+
+class HillMask14PeninsulaConnectorTests(unittest.TestCase):
+    """Mask 14 + N open + E/W ridge 8 + S in {10,24} → peninsula N connector (21)."""
+
+    def test_combo_returns_21(self) -> None:
+        self.assertEqual(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(True, 8, 8, 10),
+            21,
+        )
+        self.assertEqual(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(True, 8, 8, 24),
+            21,
+        )
+
+    def test_mismatch_returns_none(self) -> None:
+        self.assertIsNone(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(True, 8, 8, 9),
+        )
+        self.assertIsNone(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(False, 8, 8, 10),
+        )
+        self.assertIsNone(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(True, 7, 8, 10),
+        )
+
+    def test_south_tile_wrong_after_inset_raw_tip_still_21(self) -> None:
+        """Inset can overwrite south to vertical 7; raw mask 1 (hill N only) still qualifies."""
+        self.assertEqual(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(
+                True, 8, 8, 7, south_raw_cardinal_mask=1
+            ),
+            21,
+        )
+
+    def test_geo_not_tip_with_bad_ts_still_none(self) -> None:
+        self.assertIsNone(
+            resolve_hill_mask14_n_peninsula_connector_tile_id(
+                True, 8, 8, 7, south_raw_cardinal_mask=6
+            ),
+        )
+
+
+class HillPeninsulaPostInsetTileRestoreTests(unittest.TestCase):
+    """Snapshot raw tip (1/2/4/8) tiles before inset; restore after inset + spine fix."""
+
+    def test_collect_snapshot_only_includes_tip_masks(self) -> None:
+        ascii_lines = [
+            "GIGG",
+            "GIGG",
+            "GGII",
+        ]
+        w, h = 4, 3
+        base: list[list[int | None]] = [[7] * w for _ in range(h)]
+        base[1][1] = 99  # raw mask 1 at (1,1)
+        snap = collect_hill_raw_peninsula_tip_tile_snapshot(
+            ascii_lines, base, w, h, hill_char="I"
+        )
+        self.assertEqual(snap.get((1, 1)), 99)
+        self.assertIn((1, 1), snap)
+
+    def test_restore_overwrites_inset_damage(self) -> None:
+        ascii_lines = [
+            "GIGG",
+            "GIGG",
+            "GGII",
+        ]
+        w, h = 4, 3
+        base: list[list[int | None]] = [[7] * w for _ in range(h)]
+        base[1][1] = 99
+        snap = collect_hill_raw_peninsula_tip_tile_snapshot(
+            ascii_lines, base, w, h, hill_char="I"
+        )
+        out, _, rims = apply_hill_diagonal_inset_neighbor_rules(
+            ascii_lines, [row[:] for row in base], w, h, skip_rim_on_raw_peninsula_tips=False
+        )
+        self.assertNotEqual(out[1][1], 99)
+        apply_hill_peninsula_post_inset_tile_restore_pass(out, w, h, snap)
+        self.assertEqual(out[1][1], 99)
+
+    def test_corridor_cells_merged_into_snapshot(self) -> None:
+        """Spine / protrusion targets (not raw tips) must be restorable after inset."""
+        ascii_lines = [
+            "GIGG",
+            "GIGG",
+            "GGII",
+        ]
+        w, h = 4, 3
+        base: list[list[int | None]] = [[7] * w for _ in range(h)]
+        base[1][1] = 12  # raw tip (1) at (1,1)
+        base[2][2] = 21  # protrusion-style tee — not a raw 1/2/4/8 tip
+        corridor = frozenset({(2, 2)})
+        snap = collect_hill_raw_peninsula_tip_tile_snapshot(
+            ascii_lines, base, w, h, hill_char="I", corridor_cells=corridor
+        )
+        self.assertEqual(snap.get((1, 1)), 12)
+        self.assertEqual(snap.get((2, 2)), 21)
+        out, _, _ = apply_hill_diagonal_inset_neighbor_rules(
+            ascii_lines, [row[:] for row in base], w, h, skip_rim_on_raw_peninsula_tips=False
+        )
+        self.assertNotEqual(out[2][2], 21)
+        apply_hill_peninsula_post_inset_tile_restore_pass(out, w, h, snap)
+        self.assertEqual(out[2][2], 21)
+
+    def test_restore_skips_coords_that_overlap_inset_rims(self) -> None:
+        """Rim cells (e.g. SW south cap 4) must not be clobbered by corridor snapshot (e.g. 9)."""
+        out: list[list[int | None]] = [[10, 10], [4, 10]]
+        snap = {(0, 1): 9}
+        apply_hill_peninsula_post_inset_tile_restore_pass(
+            out, 2, 2, snap, skip_coords=frozenset({(0, 1)})
+        )
+        self.assertEqual(out[1][0], 4)
+        apply_hill_peninsula_post_inset_tile_restore_pass(out, 2, 2, snap)
+        self.assertEqual(out[1][0], 9)
+
+
+class HillPeninsulaProtrusionAdjacentTests(unittest.TestCase):
+    """First spine cell from cardinal tips: 21/24 (S tip + T), 21/24 (N tip), 18/8, 19/8."""
+
+    @patch(
+        "tilemap_generator.paint_map_png.hill_mask5_vertical_spine_open_diagonals_for_tile24",
+        return_value=False,
+    )
+    def test_south_tip_interior_ew_grass_is_24(self, _m: object) -> None:
+        lines = [
+            "GGGGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGIGGG",
+            "GGGGGG",
+        ]
+        w, h = 6, 6
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 9
+        base[4][2] = HILL_MAP[1]
+        base[1][2] = HILL_MAP[4]
+        apply_hill_peninsula_vertical_spine_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        apply_hill_peninsula_protrusion_adjacent_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[3][2], 24)
+
+    @patch(
+        "tilemap_generator.paint_map_png.hill_mask5_vertical_spine_open_diagonals_for_tile24",
+        return_value=False,
+    )
+    def test_south_tip_interior_ew_hill_is_south_tee_21(self, _m: object) -> None:
+        # Row y=3: spine x=3 with W and E hills → interior mask 15; south tee connector tile 21.
+        lines = [
+            "GGGGGGG",
+            "GGGIGGG",
+            "GGGIGGG",
+            "GGIIIGG",
+            "GGGIGGG",
+            "GGGGGGG",
+        ]
+        w, h = 7, 6
+        cx = 3
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 9
+        base[4][cx] = HILL_MAP[1]
+        base[1][cx] = HILL_MAP[4]
+        apply_hill_peninsula_vertical_spine_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        apply_hill_peninsula_protrusion_adjacent_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[3][cx], 21)
+
+    def test_horizontal_west_tip_interior_ns_grass_is_ridge_8(self) -> None:
+        lines = ["GGGGG", "GIIIG", "GGGGG"]
+        w, h = 5, 3
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 8
+        apply_hill_peninsula_protrusion_adjacent_pass(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[1][2], HILL_MAP[10])
+
+
+class HillMask11TeeNeighborGateTests(unittest.TestCase):
+    """hill_map[11] tee only when a cardinal hill neighbor tile is in 10–13 ∪ 23–33 (painter gate)."""
+
+    def _mask11_center_fixture(self) -> tuple[list[str], int, int, int, int]:
+        """5×3 map; center (2,1) is I with mask 11 (N,E,W hill; S grass)."""
+        lines = [
+            "GIIIG",
+            "GIIIG",
+            "GGGGG",
+        ]
+        return lines, 5, 3, 2, 1
+
+    def test_no_allowed_neighbor_replaces_tee_with_ridge(self) -> None:
+        lines, w, h, cx, cy = self._mask11_center_fixture()
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 1
+        base[cy][cx] = HILL_MAP[11]
+        base[cy - 1][cx] = 5
+        base[cy][cx - 1] = 4
+        base[cy][cx + 1] = 8
+        self.assertEqual(compute_hill_autotile_mask(lines, cx, cy, hill_char="I"), 11)
+        apply_hill_mask11_tee_neighbor_gate(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[cy][cx], HILL_MAP[10])
+
+    def test_allowed_neighbor_keeps_tee(self) -> None:
+        lines, w, h, cx, cy = self._mask11_center_fixture()
+        base: list[list[int | None]] = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 1
+        base[cy][cx] = HILL_MAP[11]
+        base[cy - 1][cx] = 12
+        base[cy][cx - 1] = 4
+        base[cy][cx + 1] = 8
+        apply_hill_mask11_tee_neighbor_gate(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[cy][cx], HILL_MAP[11])
+
+    def test_tile_23_neighbor_keeps_tee(self) -> None:
+        lines, w, h, cx, cy = self._mask11_center_fixture()
+        base = [[None] * w for _ in range(h)]
+        for y in range(h):
+            for x in range(w):
+                if lines[y][x] == "I":
+                    base[y][x] = 1
+        base[cy][cx] = HILL_MAP[11]
+        base[cy - 1][cx] = 23
+        base[cy][cx - 1] = 4
+        base[cy][cx + 1] = 8
+        apply_hill_mask11_tee_neighbor_gate(lines, base, w, h, HILL_MAP, hill_char="I")
+        self.assertEqual(base[cy][cx], HILL_MAP[11])
+
+
+class HillMask11ExtensionConnectTests(unittest.TestCase):
+    """Mask 11 (N+E+W, S open): W=corner 4 + E=extension 8 → center tile 8 (ridge second pass)."""
+
+    def test_w4_e8_returns_connect_tile(self) -> None:
+        self.assertEqual(
+            resolve_hill_mask11_corner_extension_connect_tile_id(4, 8),
+            8,
+        )
+
+    def test_mismatch_returns_none(self) -> None:
+        self.assertIsNone(resolve_hill_mask11_corner_extension_connect_tile_id(3, 8))
+        self.assertIsNone(resolve_hill_mask11_corner_extension_connect_tile_id(4, 7))
+
+    def test_custom_overrides(self) -> None:
+        self.assertEqual(
+            resolve_hill_mask11_corner_extension_connect_tile_id(
+                10, 20, w_corner_tile=10, e_extension_tile=20, connect_tile=99
+            ),
+            99,
+        )
+
+
 class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
     def _grid(self, w: int, h: int, fill: int) -> list[list[int | None]]:
         return [[fill] * w for _ in range(h)]
+
+    def test_sw_w_rim_skips_raw_peninsula_tip_west_of_checkerboard_inset(self) -> None:
+        """SW inset W rim must not overwrite a mask-1 tip (N-only hill) with continuation art."""
+        ascii_lines = [
+            "GIGG",
+            "GIGG",
+            "GGII",
+        ]
+        snap = self._grid(4, 3, 7)
+        snap[1][1] = 99
+        out, grass_inset, _ = apply_hill_diagonal_inset_neighbor_rules(
+            ascii_lines, snap, 4, 3, skip_rim_on_raw_peninsula_tips=True
+        )
+        self.assertEqual(grass_inset[1][2], 36)  # SW concave at (2,1)
+        self.assertEqual(out[1][1], 99)
+        out_legacy, _, _ = apply_hill_diagonal_inset_neighbor_rules(
+            ascii_lines, snap, 4, 3, skip_rim_on_raw_peninsula_tips=False
+        )
+        self.assertNotEqual(out_legacy[1][1], 99)
 
     def test_sw_geometry_inset_and_south_to_9(self) -> None:
         # Grass (2,0): W+S hill; second pass: S from succeeding S (OOB→hill→9), W from preceding W (I→8)
@@ -624,6 +1101,20 @@ class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
         self.assertEqual(grass_inset[0][0], 37)
         self.assertEqual(out[1][0], 7)
 
+    def test_se_checkerboard_inset_bl_grass(self) -> None:
+        """TL/BR hill, TR/BL grass; inset tags BL grass (tile 37). Mirrors SW checkerboard."""
+        ascii_lines = ["GI", "IG"]
+        snap = self._grid(2, 2, 1)
+        _, grass_inset, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, 2, 2)
+        self.assertEqual(grass_inset[0][0], 37)
+
+    def test_nw_checkerboard_inset_tr_grass(self) -> None:
+        """Same 2×2 checkerboard; NW concave at (1,1) with NW diagonal grass → tile 34."""
+        ascii_lines = ["GI", "IG"]
+        snap = self._grid(2, 2, 1)
+        _, grass_inset, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, 2, 2)
+        self.assertEqual(grass_inset[1][1], 34)
+
     def test_ne_geometry_inset_and_south_to_6(self) -> None:
         # NE concave: N+E hill; W and S grass — south override applies only if (1,2) is hill
         ascii_lines = ["III", "GGI", "GGG"]
@@ -631,6 +1122,13 @@ class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
         out, grass_inset, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, 3, 3)
         self.assertEqual(grass_inset[1][1], 35)
         self.assertEqual(out[2][1], 1)  # south is grass; no hill tile to override
+
+    def test_ne_checkerboard_inset_tr_grass(self) -> None:
+        """TL/BR hill, TR/BL grass; inset tags BL (tile 35). Mirrors SW checkerboard."""
+        ascii_lines = ["IG.", "GI.", "..."]
+        snap = self._grid(3, 3, 1)
+        _, grass_inset, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, 3, 3)
+        self.assertEqual(grass_inset[1][0], 35)
 
     def test_nw_geometry_inset_only(self) -> None:
         ascii_lines = ["III", "IGG", "GGG"]
@@ -695,6 +1193,53 @@ class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
         self.assertEqual(out[0][1], 9)
         self.assertEqual(out[1][0], 6)
 
+    def test_sw_s_does_not_overwrite_nw_n_rim_with_tile_4_when_open_north(self) -> None:
+        """SW inset above NW inset shares the middle hill; SW S second pass must not paste **4**
+        over NW N cap **2** when column north of the rim has no ``I`` (open grass at ``(2,0)``)."""
+        ascii_lines = [
+            ".IG.",
+            ".II.",
+            ".IGG",
+            "....",
+        ]
+        w, h = 4, 4
+        snap = self._grid(w, h, 1)
+        for y in range(h):
+            for x in range(w):
+                if x < len(ascii_lines[y]) and ascii_lines[y][x] == "I":
+                    snap[y][x] = resolve_hill_autotile_tile_id(ascii_lines, x, y, HILL_MAP)
+        out, gi, _ = apply_hill_diagonal_inset_neighbor_rules(
+            ascii_lines, snap, w, h, corner_tiles={"nw": 34, "ne": 35, "sw": 36, "se": 37}
+        )
+        self.assertEqual(gi[2][2], 34)  # NW notch (2,2)
+        self.assertEqual(gi[0][2], 36)  # SW notch (2,0)
+        self.assertNotEqual(out[1][2], 4, "SW S must not stomp NW N rim with south grass-4")
+        self.assertEqual(out[1][2], 2)
+
+    def test_nw_overlay_north_of_tr_matches_rim_second_pass_semantics(self) -> None:
+        """OOB north of NW TR counts as hill so 2×2 overlay can pick vertical cliff tile 9."""
+        import tilemap_generator.paint_map_png as pmp
+
+        self.assertEqual(
+            pmp._rim_refine_br_for_diagonal_overlay(["GI", "GG"], 0, -1, 2, 2, hill_char="I"),
+            "hill",
+        )
+        self.assertEqual(
+            pmp._rim_refine_br_for_diagonal_overlay(["GI", "GG"], 0, 0, 2, 2, hill_char="I"),
+            "grass",
+        )
+        self.assertEqual(
+            pmp._rim_refine_br_for_diagonal_overlay(["II", "GG"], 0, 0, 2, 2, hill_char="I"),
+            "hill",
+        )
+
+    def test_nw_checkerboard_treats_tree_on_nw_diagonal_as_grass_gap(self) -> None:
+        """NW checkerboard: ``T`` on the NW diagonal still forms the concave notch (forest gap)."""
+        ascii_lines = ["TII", "IGG", "GGG"]
+        snap = self._grid(3, 3, 1)
+        _, gi, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, 3, 3)
+        self.assertEqual(gi[1][1], 34)
+
     def test_rim_overrides_explicit(self) -> None:
         ascii_lines = ["III", "IGG", "GGG"]
         snap = self._grid(3, 3, 1)
@@ -742,6 +1287,24 @@ class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
         # Succeeding S from (4,1) is grass → SW s grass = 4; must not stay NE n grass = 2
         self.assertEqual(out[1][4], 4)
 
+    def test_nw_n_rim_on_sw_s_shared_cell_keeps_9_when_plateau_north_past_tree(self) -> None:
+        """SW at (3,2) and NW at (3,4) share S/N rim (3,3). Column has ``I`` above ``T`` above SW
+        grass — :func:`_inset_n_rim_column_has_hill_north` is true; SW S must not overwrite NW N **9**."""
+        ascii_lines = [
+            "GGIIIGG",
+            "GGITTGG",
+            "GIIGGGG",
+            "GIGIIII",
+            "GIIGGGG",
+            "GGGGGGG",
+        ]
+        w, h = 7, 6
+        snap = self._grid(w, h, 1)
+        out, gi, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, w, h)
+        self.assertEqual(gi[2][3], 36)
+        self.assertEqual(gi[4][3], 34)
+        self.assertEqual(out[3][3], 9)
+
     def test_sw_w_grass_rim_survives_vertical_spine_tile_fix(self) -> None:
         """W rim (1,1) is mask 5 + diagonal-inset cap tile 2; spine fix must not replace it with 9."""
         ascii_lines = [
@@ -763,6 +1326,20 @@ class HillDiagonalInsetNeighborRulesTests(unittest.TestCase):
         )
         self.assertEqual(with_skip[1][1], 2)
 
+    def test_sw_s_rim_turn_east_uses_south_to_6_not_vertical_9(self) -> None:
+        """When (gx,gy-2) is open and (gx+2,gy-1) is hill, SW south rim uses corner 6 not 9."""
+        ascii_lines = [
+            "GGGGGG",
+            "GGGGIG",
+            "GIGGGG",
+            "GIIGGG",
+            "GGIGGG",
+        ]
+        w, h = 6, 5
+        snap = self._grid(w, h, 1)
+        out, gi, _ = apply_hill_diagonal_inset_neighbor_rules(ascii_lines, snap, w, h)
+        self.assertEqual(gi[2][2], 36)
+        self.assertEqual(out[3][2], 6)
 
 class HillDiagonalInsetPatternKeySwapTests(unittest.TestCase):
     def test_swap_sw_ne_maps_geometry_to_pattern_key(self) -> None:
@@ -849,6 +1426,55 @@ class SwInsetTlBrProbeTests(unittest.TestCase):
             _sw_inset_br_probe_two_columns_left(ascii_lines, 2, 0, 4, 2, hill_char="I"),
             "hill",
         )
+
+    def test_turn_east_geometry_forces_br_probe_hill(self) -> None:
+        # Two columns left of BR is grass, but (gx+2, gy-1) is hill and (gx, gy-2) open → "hill".
+        ascii_lines = [
+            "GGGGGG",
+            "GGGGIG",
+            "GIGGGG",
+            "GIIGGG",
+            "GGIGGG",
+        ]
+        w, h = 6, 5
+        self.assertTrue(_sw_inset_turn_east_from_grass_notch(ascii_lines, 2, 2, w, h, hill_char="I"))
+        # Grass SW at (2,2) → 2×2 origin (1,2); BR (2,3); two columns left of BR is (0,3)=G.
+        self.assertEqual(
+            _sw_inset_br_probe_two_columns_left(ascii_lines, 1, 2, w, h, hill_char="I"),
+            "hill",
+        )
+
+    def test_turn_east_false_when_n_plus_2_not_open(self) -> None:
+        ascii_lines = [
+            "IIIIII",
+            "GGGGIG",
+            "GIGGGG",
+            "GIIGGG",
+            "GGIGGG",
+        ]
+        w, h = 6, 5
+        self.assertFalse(_sw_inset_turn_east_from_grass_notch(ascii_lines, 2, 2, w, h, hill_char="I"))
+
+    def test_turn_east_true_when_north_oob(self) -> None:
+        """Top-row SW notch: (gx, gy-2) is above map → still treat north as open."""
+        ascii_lines = [
+            "GGGGI",
+            "GIGGG",
+            "GIIGG",
+        ]
+        w, h = 5, 3
+        self.assertTrue(_sw_inset_turn_east_from_grass_notch(ascii_lines, 2, 1, w, h, hill_char="I"))
+
+    def test_turn_east_true_when_north_is_shoreline_b(self) -> None:
+        ascii_lines = [
+            "GGBGGG",
+            "GGGGIG",
+            "GIGGGG",
+            "GIIGGG",
+            "GGIGGG",
+        ]
+        w, h = 6, 5
+        self.assertTrue(_sw_inset_turn_east_from_grass_notch(ascii_lines, 2, 2, w, h, hill_char="I"))
 
 
 class SeInsetTrBlProbeTests(unittest.TestCase):
