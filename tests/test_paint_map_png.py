@@ -43,7 +43,9 @@ from tilemap_generator.paint_map_png import (
     propagate_shore_masks,
     resolve_center_ocean_inset_tile,
     resolve_bottom_ocean_inset_tile,
+    resolve_hill_basic_mask_paint_tile_id,
     resolve_hill_autotile_tile_id,
+    resolve_hill_split_mask_tile_id,
     hill_mask5_vertical_spine_open_diagonals_for_tile24,
 )
 
@@ -538,7 +540,7 @@ class HillAutotileInteriorExclusionTests(unittest.TestCase):
         self.assertEqual(resolve_hill_autotile_tile_id(lines, 2, 2, HILL_MAP), HILL_MAP[6])
 
     def test_two_wide_vertical_strip_middle_uses_spine_9_and_7(self) -> None:
-        # 2×5 II pill: outer faces are mask 7 / 13 — spine cliffs 9 / 7, not tee 28/30
+        # 2×5 II pill: outer faces are mask 7 / 13 — spine cliffs 9 / 7.
         lines = [
             "GIIG",
             "GIIG",
@@ -573,7 +575,7 @@ class HillAutotileInteriorExclusionTests(unittest.TestCase):
         self.assertEqual(resolve_hill_autotile_tile_id(lines, 4, 1, HILL_MAP), 7)
 
     def test_two_row_horizontal_strip_middle_uses_spine_6_and_8(self) -> None:
-        # n×2 II pill (2 rows): top/bottom faces are mask 14 / 11 — ridge 6 / 8, not tee 26/32
+        # n×2 II pill (2 rows): top/bottom faces are mask 14 / 11 — ridge 6 / 8.
         lines = [
             "GGIIIII",
             "GGIIIII",
@@ -618,6 +620,112 @@ class HillAutotileInteriorExclusionTests(unittest.TestCase):
         lines = ["..I..", ".III.", "..I.."]
         self.assertTrue(is_hill_mask15_articulation_point(lines, 2, 1))
         self.assertFalse(is_hill_deep_interior_cell(lines, 2, 1))
+
+
+class HillSplitMaskJsonTests(unittest.TestCase):
+    def test_split_resolver_uses_shape_map_for_enabled_mask(self) -> None:
+        tid = resolve_hill_split_mask_tile_id(
+            mask_for_lookup=10,
+            raw_mask=10,
+            autotile_mask=10,
+            maps_by_shape={
+                "default": {10: 8},
+                "ridge_horizontal": {10: 77},
+            },
+            enabled_masks=frozenset({10}),
+            default_shape="default",
+        )
+        self.assertEqual(tid, 77)
+
+    def test_split_resolver_falls_back_to_default_shape(self) -> None:
+        tid = resolve_hill_split_mask_tile_id(
+            mask_for_lookup=11,
+            raw_mask=11,
+            autotile_mask=11,
+            maps_by_shape={"default": {11: 66}},
+            enabled_masks=frozenset({11}),
+            default_shape="default",
+        )
+        self.assertEqual(tid, 66)
+
+    def test_basic_resolver_respects_enabled_mask_allowlist(self) -> None:
+        lines = ["III"]
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines,
+                1,
+                0,
+                raw_cardinal_mask=10,
+                hill_map=HILL_MAP,
+                split_maps_by_shape={"default": {10: 55}},
+                split_enabled_masks=frozenset({10}),
+            ),
+            55,
+        )
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines,
+                1,
+                0,
+                raw_cardinal_mask=10,
+                hill_map=HILL_MAP,
+                split_maps_by_shape={"default": {10: 55}},
+                split_enabled_masks=frozenset({11}),
+            ),
+            HILL_MAP[10],
+        )
+
+    def test_basic_resolver_three_side_masks_use_cliff_faces(self) -> None:
+        lines = ["I"]
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines, 0, 0, raw_cardinal_mask=7, hill_map=HILL_MAP
+            ),
+            9,
+        )
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines, 0, 0, raw_cardinal_mask=13, hill_map=HILL_MAP
+            ),
+            7,
+        )
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines, 0, 0, raw_cardinal_mask=14, hill_map=HILL_MAP
+            ),
+            6,
+        )
+        self.assertEqual(
+            resolve_hill_basic_mask_paint_tile_id(
+                lines, 0, 0, raw_cardinal_mask=11, hill_map=HILL_MAP
+            ),
+            8,
+        )
+
+    def test_autotile_resolver_uses_split_for_enabled_mask(self) -> None:
+        lines = ["GIIIIIG", "GIIIIIG", "GIIIIIG"]
+        self.assertEqual(
+            resolve_hill_autotile_tile_id(
+                lines,
+                3,
+                0,
+                HILL_MAP,
+                split_maps_by_shape={"ridge_horizontal": {10: 88}, "default": {10: 8}},
+                split_enabled_masks=frozenset({10}),
+            ),
+            88,
+        )
+        self.assertEqual(
+            resolve_hill_autotile_tile_id(
+                lines,
+                3,
+                0,
+                HILL_MAP,
+                split_maps_by_shape={"ridge_horizontal": {10: 88}, "default": {10: 8}},
+                split_enabled_masks=frozenset({11}),
+            ),
+            HILL_MAP[10],
+        )
 
 
 class HillVerticalSpineTileFixTests(unittest.TestCase):

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import platform
 import random
+import subprocess
+import sys
+from pathlib import Path
 
 from tilemap_generator import aseprite_cli
 from tilemap_generator import cli as map_cli
@@ -77,6 +82,205 @@ def prompt_bool(label: str, default: bool) -> bool:
         if value in ("n", "no", "0", "false"):
             return False
         print("Enter y or n.")
+
+
+def _project_root() -> Path:
+    """Repository root (parent of ``src/``)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_user_path(raw: str) -> Path:
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    cwd = Path.cwd() / p
+    if cwd.exists():
+        return cwd.resolve()
+    root = _project_root() / p
+    return root.resolve()
+
+
+def _hill_sixteen_mask_table_markdown(legend_path: Path) -> str:
+    """Return the ``| Mask | Cardinals set | ...`` table from ``HILL_MASK_LEGEND.md``."""
+    if not legend_path.exists():
+        return f"(Legend file not found: {legend_path})\n"
+    lines = legend_path.read_text(encoding="utf-8").splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("| Mask | Cardinals set |"):
+            chunk: list[str] = []
+            j = i
+            while j < len(lines) and lines[j].strip() and lines[j].startswith("|"):
+                chunk.append(lines[j])
+                j += 1
+            return "\n".join(chunk) + "\n"
+    return "(Could not find 16-mask table in legend.)\n"
+
+
+def _legend_subsection(
+    legend_path: Path,
+    start_heading_line: str,
+    *,
+    stop_at_line: str | None = None,
+) -> str:
+    if not legend_path.exists():
+        return f"(Legend file not found: {legend_path})\n"
+    lines = legend_path.read_text(encoding="utf-8").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == start_heading_line.strip():
+            start = i
+            break
+    if start is None:
+        return f"(Section not found: {start_heading_line!r})\n"
+    out: list[str] = []
+    for line in lines[start:]:
+        if stop_at_line and line.strip() == stop_at_line.strip():
+            break
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
+def _coerce_hill_map_tile_value(raw: object, *, mask: int, builtin_default: int) -> int:
+    if isinstance(raw, bool):
+        return builtin_default
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    try:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return builtin_default
+
+
+def prompt_edit_hill_map_mask_tile() -> None:
+    """Load terrain JSON, prompt mask and tile, confirm, then optionally write ``hill.hill_map``."""
+    from tilemap_generator.paint_map_png import HILL_MAP
+
+    default_cfg = str(_project_root() / "examples" / "terrain.bitmask.json")
+    raw_path = input(f"This JSON file path? [{default_cfg}]: ").strip() or default_cfg
+    cfg_path = _resolve_user_path(raw_path)
+    if not cfg_path.exists():
+        print(f"File not found: {cfg_path}", file=sys.stderr)
+        return
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON: {e}", file=sys.stderr)
+        return
+    hill = data.get("hill")
+    if not isinstance(hill, dict):
+        print("Config has no 'hill' object.", file=sys.stderr)
+        return
+    hm = hill.get("hill_map")
+    if not isinstance(hm, dict):
+        print("Config 'hill' has no 'hill_map' object.", file=sys.stderr)
+        return
+
+    while True:
+        mask = prompt_int("Which mask to edit (0–15)", 0, "0-15")
+        if 0 <= mask <= 15:
+            break
+        print("Mask must be an integer from 0 to 15.")
+
+    key = str(mask)
+    cur = hm.get(key)
+    builtin_tile = int(HILL_MAP.get(mask, HILL_MAP.get(0, 1)))
+    from_tile = _coerce_hill_map_tile_value(cur, mask=mask, builtin_default=builtin_tile)
+
+    new_tile = prompt_int(
+        "Which tile to use (1-based hills.aseprite tile index)",
+        from_tile,
+        ">=1",
+    )
+    if new_tile < 1:
+        print("Tile index should be >= 1.", file=sys.stderr)
+        return
+
+    if new_tile == from_tile:
+        print(f"Mask {mask} already uses tile {from_tile}. No change made.")
+        return
+
+    msg = (
+        f"Changing mask {mask} from tile {from_tile} to tile {new_tile}. "
+        "Are you sure you want to proceed?"
+    )
+    if not prompt_bool(msg, False):
+        print("Cancelled.")
+        return
+
+    hm[key] = new_tile
+    try:
+        with cfg_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        print(f"Could not write file: {e}", file=sys.stderr)
+        return
+    print(f"Saved hill.hill_map[{key!r}] = {new_tile} in {cfg_path}")
+
+
+def _open_in_system_default(path: Path) -> None:
+    path = path.resolve()
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            subprocess.run(["open", str(path)], check=False)
+        elif system == "Windows":
+            subprocess.run(["cmd", "/c", "start", "", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except OSError as e:
+        print(f"Could not open file: {e}", file=sys.stderr)
+
+
+def run_mask_legend_and_edit() -> None:
+    """Show the 16-mask table, then submenu: edit hill_map, docs, or back."""
+    legend = _project_root() / "docs" / "HILL_MASK_LEGEND.md"
+    det_heading = "### Deterministic variety (stable per cell)"
+    split_heading = "### Split mask (separate maps by geometry class)"
+
+    while True:
+        print("\n--- Hill masks (0–15) — default `HILL_MAP` tile ids ---\n")
+        print(_hill_sixteen_mask_table_markdown(legend))
+        print("1. Edit hill_map (mask + default tile)")
+        print("2. Deterministic variety (reference)")
+        print("3. Split mask (reference)")
+        print("4. Back")
+        sub = input("Select [1-4]: ").strip() or "4"
+        if sub == "1":
+            prompt_edit_hill_map_mask_tile()
+            input("(Press Enter to continue.) ")
+            continue
+        if sub == "2":
+            print("\n--- Deterministic variety ---\n")
+            print(
+                _legend_subsection(
+                    legend,
+                    det_heading,
+                    stop_at_line=split_heading,
+                )
+            )
+            input("(Press Enter to continue.) ")
+            continue
+        if sub == "3":
+            print("\n--- Split mask ---\n")
+            print(_legend_subsection(legend, split_heading, stop_at_line=None))
+            input("(Press Enter to continue.) ")
+            continue
+        if sub == "4":
+            break
+        print("Invalid option.")
+
+    if not prompt_bool("Open terrain bitmask JSON in your default editor", False):
+        return
+    cfg_hint = str(_project_root() / "examples" / "terrain.bitmask.json")
+    raw = input(f"Path [{cfg_hint}]: ").strip() or cfg_hint
+    cfg_path = _resolve_user_path(raw)
+    if not cfg_path.exists():
+        print(f"File not found: {cfg_path}", file=sys.stderr)
+        return
+    _open_in_system_default(cfg_path)
 
 
 def _run_map_gen_defaults() -> None:
@@ -352,15 +556,19 @@ def run_menu() -> None:
         print("\nTilemap CLI Menu")
         print("1. Generate new ASCII map")
         print("2. Paint ASCII map in Aseprite")
-        print("3. Exit")
-        choice = input("Select an option [1-3]: ").strip()
+        print("3. View or edit mask (legend + optional terrain config)")
+        print("4. Exit")
+        choice = input("Select an option [1-4]: ").strip()
         if choice == "1":
             run_prompted_map_gen()
             return
         if choice == "2":
             run_prompted_paint()
             return
-        if choice in ("3", "q", "quit", "exit"):
+        if choice == "3":
+            run_mask_legend_and_edit()
+            continue
+        if choice in ("4", "q", "quit", "exit"):
             print("Exiting.")
             return
         print("Invalid option.")

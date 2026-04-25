@@ -119,6 +119,60 @@ def _diagonal_inset_pattern_key_for_geometry(
     return geometry_orient
 
 
+def classify_hill_split_shape_key(
+    *,
+    raw_mask: int,
+    autotile_mask: int,
+) -> str:
+    """Classify hill cell geometry for ``hill.maps_by_shape`` selection."""
+    rm = int(raw_mask) & 15
+    am = int(autotile_mask) & 15
+    if rm == HILL_INTERIOR_MASK:
+        return "cross"
+    if rm in (1, 2, 4, 8):
+        return "peninsula"
+    if rm in (3, 6, 9, 12):
+        return "corner"
+    if am == 5:
+        return "ridge_vertical"
+    if am == 10:
+        return "ridge_horizontal"
+    if am in (7, 11, 13, 14):
+        return "tee"
+    return "default"
+
+
+def resolve_hill_split_mask_tile_id(
+    *,
+    mask_for_lookup: int,
+    raw_mask: int,
+    autotile_mask: int,
+    maps_by_shape: dict[str, dict[int, int]] | None = None,
+    enabled_masks: frozenset[int] | None = None,
+    default_shape: str = "default",
+) -> int | None:
+    """Resolve optional JSON split-mask tile id for a selected mask.
+
+    Returns ``None`` when split-mask is disabled or no matching shape/map entry exists.
+    """
+    if not maps_by_shape:
+        return None
+    m = int(mask_for_lookup) & 15
+    if enabled_masks and m not in enabled_masks:
+        return None
+    shape_key = classify_hill_split_shape_key(
+        raw_mask=int(raw_mask) & 15,
+        autotile_mask=int(autotile_mask) & 15,
+    )
+    by_shape = maps_by_shape.get(shape_key)
+    if isinstance(by_shape, dict) and m in by_shape:
+        return int(by_shape[m])
+    fallback = maps_by_shape.get(default_shape)
+    if isinstance(fallback, dict) and m in fallback:
+        return int(fallback[m])
+    return None
+
+
 def _rim_refine_br_for_diagonal_overlay(
     ascii_lines: list[str],
     qx: int,
@@ -671,7 +725,8 @@ HILL_INTERIOR_MASK = 15  # N+E+S+W all hills (raw adjacency)
 # would drop both hill neighbors (both mesa interior), which wrongly yields peninsula/isolated art.
 HILL_OUTER_CORNER_RAW_MASKS = frozenset({3, 6, 9, 12})
 # Cardinals 1,2,4,8 = peninsula ends (one open side): N→12, E→11, S→10, W→13 per reference layout.
-# Ridges: 5=N+S→9 (vertical spine default), 10=E+W→8. Three-open: 7→28, 11→32, 13→30, 14→26
+# Ridges: 5=N+S→9 (vertical spine default), 10=E+W→8. Three-open masks reuse cliff faces:
+# 7→9, 13→7, 14→6, 11→8.
 # (7/13 also pair as 2-column vertical strip → spine 9/7 via hill_two_wide_vertical_strip_spine_tile_id).
 # (11/14 also pair as 2-row horizontal strip → spine 8/6 via hill_two_wide_horizontal_strip_spine_tile_id).
 HILL_MAP: dict[int, int] = {
@@ -682,22 +737,16 @@ HILL_MAP: dict[int, int] = {
     4: 10,   # S only — south peninsula
     5: 9,    # N+S ridge (vertical spine); override hill_map[5] or ridge rules for alternates
     6: 2,    # E+S corner (NW corner piece)
-    7: 28,   # N+E+S, W open
+    7: 9,    # N+E+S, W open — left cliff face
     8: 13,   # W only — west peninsula
     9: 5,    # N+W outer corner
     10: 8,  # E+W ridge (horizontal)
-    11: 32,  # N+E+W, S open
+    11: 8,   # N+E+W, S open — south cliff face
     12: 3,   # S+W corner (NE corner piece)
-    13: 30,  # N+S+W, E open
-    14: 26,  # S+E+W, N open
+    13: 7,   # N+S+W, E open — right cliff face
+    14: 6,   # S+E+W, N open — north cliff face
     15: 14,  # mask 15: 4-way connector (not used for deep plateau interior — painter uses grass)
 }
-
-# When False, ``paint_map_to_png`` only fills ``base_hill_tile_ids`` via
-# :func:`resolve_hill_autotile_tile_id` (deep interior stays ``None``). Skips mask-11 gate, ridge
-# iteration, peninsula passes, mask-14 connector, and paint-time
-# :func:`resolve_hill_mask15_protrusion_tile_id` (interior ring uses first-pass tile).
-HILL_ENABLE_POST_FIRST_PASS: bool = False
 
 # Debug / local test: when True, only **NW** diagonal inset is active (SW/SE/NE grass notches,
 # their rim second passes, and adjacent-corner edge rewrites are skipped) in
@@ -1996,10 +2045,9 @@ def hill_two_wide_vertical_strip_spine_tile_id(
     """Left/right faces of a 2-column vertical hill strip: mask 7 + mask 13 pair → spine 9 / 7.
 
     A single-column spine uses mask 5 (N+S only). Two columns side-by-side yield mask 7 on the
-    west face (W open, E+S+N hill) and mask 13 on the east (E open, W+S+N hill). Without this rule,
-    those map to ``hill_map[7]`` / ``hill_map[13]`` (tee tiles 28/30) instead of the vertical cliff
-    pair used for mask 5.     Wider strips (>2) have interior mask-15 cells, so 7+13 only occurs for
-    exactly two columns.
+    west face (W open, E+S+N hill) and mask 13 on the east (E open, W+S+N hill). The defaults now
+    match the vertical cliff pair, while this rule preserves the same behavior for overridden maps.
+    Wider strips (>2) have interior mask-15 cells, so 7+13 only occurs for exactly two columns.
     """
     width = max((len(row) for row in ascii_lines), default=0)
     ridge_default = hill_map.get(5, 9)
@@ -2029,10 +2077,9 @@ def hill_two_wide_horizontal_strip_spine_tile_id(
     """Top/bottom faces of a 2-row horizontal hill strip: mask 14 + mask 11 pair → spine 6 / 8.
 
     A single-row spine uses mask 10 (E+W only). Two rows stacked yield mask 14 on the top face
-    (N open, S+E+W hill) and mask 11 on the bottom (S open, N+E+W hill). Without this rule, those
-    map to ``hill_map[14]`` / ``hill_map[11]`` (tee tiles 26/32) instead of the horizontal ridge
-    pair used for mask 10. Taller strips (>2) have interior mask-15 cells, so 14+11 only occurs for
-    exactly two rows.
+    (N open, S+E+W hill) and mask 11 on the bottom (S open, N+E+W hill). The defaults now match the
+    horizontal cliff pair, while this rule preserves the same behavior for overridden maps. Taller
+    strips (>2) have interior mask-15 cells, so 14+11 only occurs for exactly two rows.
     """
     height = len(ascii_lines)
     ridge_h_default = hill_map.get(10, 8)
@@ -2347,8 +2394,9 @@ def apply_hill_peninsula_post_inset_tile_restore_pass(
         base_hill_tile_ids[hy][hx] = tid
 
 
-# Mask 11 default tee (``hill_map[11]``): require a cardinal hill neighbor whose first-pass tile
-# is in this set; otherwise replace tee with ``hill_map[10]`` (horizontal ridge). Override via
+# Mask 11 default tile (``hill_map[11]``): when projects override it to a tee, require a cardinal
+# hill neighbor whose first-pass tile is in this set; otherwise replace it with ``hill_map[10]``.
+# Override via
 # ``terrain.bitmask.json`` hill key ``mask11_tee_neighbor_tile_ids``.
 HILL_MASK11_TEE_NEIGHBOR_TILES: frozenset[int] = frozenset(range(10, 15)) | frozenset(range(23, 34))
 
@@ -2368,15 +2416,15 @@ def apply_hill_mask11_tee_neighbor_gate(
     If a cell has autotile mask **11** and its stored tile equals ``hill_map[11]`` (the S-open tee),
     keep it only when **some** cardinal neighbor that is hill has a non-``None`` tile id in
     ``neighbor_tee_tile_ids`` (default **10–14** and **23–33**). Otherwise set
-    ``hill_map[10]`` (horizontal ridge / extension). Skips cells not on ``hill_map[11]`` (e.g. strip
-    spine **8**). In-place.
+    ``hill_map[10]`` (horizontal ridge / extension). With the default map, ``hill_map[11]`` already
+    equals that south cliff face, so this pass is effectively neutral. In-place.
     """
     allowed = (
         neighbor_tee_tile_ids
         if neighbor_tee_tile_ids is not None
         else HILL_MASK11_TEE_NEIGHBOR_TILES
     )
-    tee_id = hill_map.get(11, 32)
+    tee_id = hill_map.get(11, 8)
     alt_id = hill_map.get(10, 8)
     for hy in range(height):
         for hx in range(width):
@@ -3426,9 +3474,24 @@ def _resolve_hill_autotile_tile_id_for_autotile_hmask(
     y: int,
     hill_map: dict[int, int],
     hmask: int,
+    *,
+    raw_mask: int,
+    split_maps_by_shape: dict[str, dict[int, int]] | None = None,
+    split_enabled_masks: frozenset[int] | None = None,
+    split_default_shape: str = "default",
     hill_char: str = "I",
 ) -> int:
     """Map inferred autotile mask (not raw 15) to first-pass hill tile id; see :func:`resolve_hill_autotile_tile_id`."""
+    split_tid = resolve_hill_split_mask_tile_id(
+        mask_for_lookup=hmask,
+        raw_mask=raw_mask,
+        autotile_mask=hmask,
+        maps_by_shape=split_maps_by_shape,
+        enabled_masks=split_enabled_masks,
+        default_shape=split_default_shape,
+    )
+    if split_tid is not None:
+        return split_tid
     tw = hill_two_wide_vertical_strip_spine_tile_id(
         ascii_lines, x, y, hmask, hill_map, hill_char=hill_char
     )
@@ -3455,9 +3518,9 @@ def _resolve_hill_autotile_tile_id_for_autotile_hmask(
     if hmask == 12:
         return hill_map.get(12, 3)
     if hmask == 11:
-        return hill_map.get(11, 32)
+        return hill_map.get(11, 8)
     if hmask == 14:
-        return hill_map.get(14, 26)
+        return hill_map.get(14, 6)
     return hill_map.get(hmask, hill_map.get(0, 1))
 
 
@@ -3470,11 +3533,14 @@ def resolve_hill_autotile_tile_id(
     *,
     cached_raw_mask: int | None = None,
     cached_autotile_mask: int | None = None,
+    split_maps_by_shape: dict[str, dict[int, int]] | None = None,
+    split_enabled_masks: frozenset[int] | None = None,
+    split_default_shape: str = "default",
 ) -> int:
     """Map hill adjacency mask to 1-based hills.aseprite tile id.
 
     Applies the same diagonal corner upgrade as lake shorelines (see `_hill_mask_with_diagonal_inference`).
-    Corners: 6→2, 12→3; three-open sides: 7,11,13,14 from hill_map (e.g. 28,32,30,26).
+    Corners: 6→2, 12→3; three-open sides: 7,11,13,14 from hill_map (defaults 9,8,7,6).
 
     Interior cells (raw mask 15: all four cardinals are I) use mesa from hill_map[15]. Non-interior
     cells use cardinal neighbors with interior I excluded (so rim stays ridge/edge after fill), except
@@ -3492,17 +3558,18 @@ def resolve_hill_autotile_tile_id(
     ``hill_mask5_vertical_spine_open_diagonals_for_tile24``).
 
     Two-column vertical strips use mask 7 / 13 on the outer faces; those pair as left/right spine
-    cliffs (``hill_map[5]`` and the paired right cliff from ``resolve_hill_vertical_ridge_tile_id``),
-    not ``hill_map[7]`` / ``hill_map[13]`` tee tiles — see :func:`hill_two_wide_vertical_strip_spine_tile_id`.
+    cliffs (``hill_map[5]`` and the paired right cliff from ``resolve_hill_vertical_ridge_tile_id``)
+    — see :func:`hill_two_wide_vertical_strip_spine_tile_id`.
 
     Two-row horizontal strips use mask 14 / 11 on the outer faces; those pair as top/bottom spine
-    ridges (tile 6 / 8 from ``resolve_hill_horizontal_ridge_tile_id``), not ``hill_map[14]`` /
-    ``hill_map[11]`` tee tiles — see :func:`hill_two_wide_horizontal_strip_spine_tile_id`.
+    ridges (tile 6 / 8 from ``resolve_hill_horizontal_ridge_tile_id``)
+    — see :func:`hill_two_wide_horizontal_strip_spine_tile_id`.
 
-    Mask **11** (N+E+W, S open): default ``hill_map[11]`` tee is applied here; the PNG painter then
-    runs :func:`apply_hill_mask11_tee_neighbor_gate` so the tee is kept only when a cardinal hill
-    neighbor's first-pass tile is in the configured peninsula/tee-adjacent id set (default 10–14,
-    23–33); otherwise ``hill_map[10]``. Ridge second pass may still set
+    Mask **11** (N+E+W, S open): default ``hill_map[11]`` is the south cliff face. If a project
+    overrides it to a tee, the PNG painter then runs :func:`apply_hill_mask11_tee_neighbor_gate` so
+    the tee is kept only when a cardinal hill neighbor's first-pass tile is in the configured
+    peninsula/tee-adjacent id set (default 10–14, 23–33); otherwise ``hill_map[10]``. Ridge second
+    pass may still set
     :func:`resolve_hill_mask11_corner_extension_connect_tile_id` (default W=4, E=8 → center 8).
 
     After ridge passes, :func:`apply_hill_peninsula_vertical_spine_pass` walks from mask **1** / **4**
@@ -3530,6 +3597,16 @@ def resolve_hill_autotile_tile_id(
         )
     )
     if raw_mask == HILL_INTERIOR_MASK:
+        split_tid = resolve_hill_split_mask_tile_id(
+            mask_for_lookup=HILL_INTERIOR_MASK,
+            raw_mask=raw_mask,
+            autotile_mask=HILL_INTERIOR_MASK,
+            maps_by_shape=split_maps_by_shape,
+            enabled_masks=split_enabled_masks,
+            default_shape=split_default_shape,
+        )
+        if split_tid is not None:
+            return split_tid
         return hill_map.get(15, hill_map.get(0, 1))
 
     hmask = (
@@ -3538,7 +3615,16 @@ def resolve_hill_autotile_tile_id(
         else compute_hill_autotile_mask(ascii_lines, x, y, hill_char=hill_char)
     )
     return _resolve_hill_autotile_tile_id_for_autotile_hmask(
-        ascii_lines, x, y, hill_map, hmask, hill_char=hill_char
+        ascii_lines,
+        x,
+        y,
+        hill_map,
+        hmask,
+        raw_mask=raw_mask,
+        split_maps_by_shape=split_maps_by_shape,
+        split_enabled_masks=split_enabled_masks,
+        split_default_shape=split_default_shape,
+        hill_char=hill_char,
     )
 
 
@@ -3554,6 +3640,9 @@ def resolve_hill_paint_layer_tile_id(
     post_first_pass: bool,
     width: int,
     height: int,
+    split_maps_by_shape: dict[str, dict[int, int]] | None = None,
+    split_enabled_masks: frozenset[int] | None = None,
+    split_default_shape: str = "default",
     hill_char: str = "I",
 ) -> int | None:
     """Hills-layer tile id for (x, y), or ``None`` when only grass should show (deep plateau core).
@@ -3575,6 +3664,9 @@ def resolve_hill_paint_layer_tile_id(
             hill_char,
             cached_raw_mask=raw_cardinal_mask,
             cached_autotile_mask=autotile_mask,
+            split_maps_by_shape=split_maps_by_shape,
+            split_enabled_masks=split_enabled_masks,
+            split_default_shape=split_default_shape,
         )
     if base_hill_tile_ids is not None:
         if post_first_pass:
@@ -3596,7 +3688,45 @@ def resolve_hill_paint_layer_tile_id(
         hill_char,
         cached_raw_mask=raw_cardinal_mask,
         cached_autotile_mask=autotile_mask,
+        split_maps_by_shape=split_maps_by_shape,
+        split_enabled_masks=split_enabled_masks,
+        split_default_shape=split_default_shape,
     )
+
+
+def resolve_hill_basic_mask_paint_tile_id(
+    ascii_lines: list[str],
+    x: int,
+    y: int,
+    *,
+    raw_cardinal_mask: int,
+    hill_map: dict[int, int],
+    split_maps_by_shape: dict[str, dict[int, int]] | None = None,
+    split_enabled_masks: frozenset[int] | None = None,
+    split_default_shape: str = "default",
+    hill_char: str = "I",
+) -> int | None:
+    """Hill PNG paint: strict cardinal mask 0–15 → ``hill_map``.
+
+    Uses the same 4-bit NESW adjacency as :func:`get_hill_adjacency_bitmask` with
+    ``exclude_interior_hill_neighbors=False`` (no autotile diagonal inference or interior stripping).
+
+    Returns ``None`` for deep plateau cores so only the grass under-layer shows.
+    """
+    if is_hill_deep_interior_cell(ascii_lines, x, y, hill_char=hill_char):
+        return None
+    m = int(raw_cardinal_mask) & 15
+    split_tid = resolve_hill_split_mask_tile_id(
+        mask_for_lookup=m,
+        raw_mask=m,
+        autotile_mask=m,
+        maps_by_shape=split_maps_by_shape,
+        enabled_masks=split_enabled_masks,
+        default_shape=split_default_shape,
+    )
+    if split_tid is not None:
+        return split_tid
+    return hill_map.get(m, hill_map.get(0, 1))
 
 
 def resolve_hill_mask15_protrusion_tile_id(
@@ -4034,11 +4164,48 @@ def paint_map_to_png(
     _hill = _to_int_map(cfg.get("hill_map") or (cfg.get("hill") or {}).get("hill_map"))
     hill_map = _hill if _hill else dict(HILL_MAP)
     hill_bridge_tiles: dict[str, int] | None = None
+    split_maps_by_shape: dict[str, dict[int, int]] | None = None
+    split_enabled_masks: frozenset[int] = frozenset()
+    split_default_shape = "default"
     _hill_cfg = cfg.get("hill") if isinstance(cfg.get("hill"), dict) else {}
     if _hill_cfg:
         bc = _hill_cfg.get("2x2_corners")
         if isinstance(bc, dict):
             hill_bridge_tiles = {k: int(v) for k, v in bc.items() if k in ("tl", "tr", "bl", "br")}
+        raw_split = _hill_cfg.get("maps_by_shape")
+        if isinstance(raw_split, dict):
+            parsed_split: dict[str, dict[int, int]] = {}
+            for shape_key, mapping in raw_split.items():
+                if not isinstance(shape_key, str) or not isinstance(mapping, dict):
+                    continue
+                int_map: dict[int, int] = {}
+                for mk, mv in mapping.items():
+                    try:
+                        if isinstance(mv, bool):
+                            continue
+                        int_map[int(mk)] = int(mv)
+                    except (TypeError, ValueError):
+                        continue
+                if int_map:
+                    parsed_split[shape_key.strip()] = int_map
+            if parsed_split:
+                split_maps_by_shape = parsed_split
+        raw_enabled = _hill_cfg.get("split_mask_enabled_masks")
+        if isinstance(raw_enabled, (list, tuple, set)):
+            enabled: set[int] = set()
+            for item in raw_enabled:
+                try:
+                    if isinstance(item, bool):
+                        continue
+                    m = int(item)
+                    if 0 <= m <= 15:
+                        enabled.add(m)
+                except (TypeError, ValueError):
+                    continue
+            split_enabled_masks = frozenset(enabled)
+        raw_default_shape = _hill_cfg.get("split_mask_default_shape")
+        if isinstance(raw_default_shape, str) and raw_default_shape.strip():
+            split_default_shape = raw_default_shape.strip()
     # When true, paste 2x2 corner tiles on ASCII grass to "bridge" diagonal hill gaps (can cover interior grass).
     hill_diagonal_bridge = bool(_hill_cfg.get("diagonal_bridge", False))
     extended_masks = tuple(cfg.get("extended_shoreline_masks") or EXTENDED_SHORELINE_MASKS)
@@ -4466,7 +4633,7 @@ def paint_map_to_png(
                         _paste_water(water_shallow_layer, wt, bx * tile_size, by * tile_size)
 
     resolved_shore_tiles: dict[tuple[int, int], int] = {}
-    # First-pass hill tile IDs for mask-15 protrusion second pass (neighbors' base tiles → 15–18)
+    # Hill layer: strict cardinal mask 0–15 → ``hill_map`` only (see :func:`resolve_hill_basic_mask_paint_tile_id`).
     base_hill_tile_ids: list[list[int | None]] | None = None
     hill_raw_masks: list[list[int | None]] | None = None
     hill_autotile_masks: list[list[int | None]] | None = None
@@ -4487,194 +4654,22 @@ def paint_map_to_png(
                     base_hill_tile_ids[hy][hx] = None
                 else:
                     rm = hill_raw_masks[hy][hx]
-                    am = hill_autotile_masks[hy][hx]
-                    base_hill_tile_ids[hy][hx] = resolve_hill_autotile_tile_id(
+                    if rm is None:
+                        rm = get_hill_adjacency_bitmask(
+                            ascii_lines, hx, hy, hill_char="I", exclude_interior_hill_neighbors=False
+                        )
+                    tid = resolve_hill_basic_mask_paint_tile_id(
                         ascii_lines,
                         hx,
                         hy,
-                        hill_map,
+                        raw_cardinal_mask=int(rm),
+                        hill_map=hill_map,
+                        split_maps_by_shape=split_maps_by_shape,
+                        split_enabled_masks=split_enabled_masks,
+                        split_default_shape=split_default_shape,
                         hill_char="I",
-                        cached_raw_mask=rm,
-                        cached_autotile_mask=am,
                     )
-        if HILL_ENABLE_POST_FIRST_PASS:
-            _m11_gate = _hill_cfg.get("mask11_tee_neighbor_tile_ids")
-            _m11_allowed: frozenset[int] | None
-            if _m11_gate is not None and isinstance(_m11_gate, list):
-                _m11_allowed = frozenset(int(x) for x in _m11_gate)
-            else:
-                _m11_allowed = None
-            apply_hill_mask11_tee_neighbor_gate(
-                ascii_lines,
-                base_hill_tile_ids,
-                width,
-                height,
-                hill_map,
-                hill_char="I",
-                neighbor_tee_tile_ids=_m11_allowed,
-            )
-            default_ridge_h = hill_map.get(10, 8)
-            mask11_w_corner_tile = int(_hill_cfg.get("mask11_w_corner_tile_for_extension", 4))
-            mask11_e_extension_tile = int(_hill_cfg.get("mask11_e_extension_neighbor_tile", 8))
-            mask11_extension_connect_tile = int(_hill_cfg.get("mask11_extension_connect_tile", 8))
-            hill_chr = "I"
-
-            def _neighbor_is_horizontal_ridge(px: int, py: int) -> bool:
-                if not (0 <= px < width and 0 <= py < height):
-                    return False
-                row = ascii_lines[py]
-                if (row[px] if px < len(row) else ".") != hill_chr:
-                    return False
-                return compute_hill_autotile_mask(ascii_lines, px, py, hill_char=hill_chr) == 10
-
-            # Repeat until stable so (7,7) / (3,5) / (6,6) / (8,8) propagate along ridge strips.
-            max_ridge_passes = max(width, height, 12)
-            for _ in range(max_ridge_passes):
-                changed = False
-                for hy in range(height):
-                    for hx in range(width):
-                        if base_hill_tile_ids[hy][hx] is None:
-                            continue
-                        r = ascii_lines[hy]
-                        if (r[hx] if hx < len(r) else ".") != hill_chr:
-                            continue
-                        raw_card = get_hill_adjacency_bitmask(
-                            ascii_lines, hx, hy, hill_char=hill_chr, exclude_interior_hill_neighbors=False
-                        )
-                        amask = compute_hill_autotile_mask(ascii_lines, hx, hy, hill_char=hill_chr)
-                        if raw_card == 5 or amask == 5:
-                            if hill_mask5_vertical_spine_open_diagonals_for_tile24(
-                                ascii_lines, hx, hy, hill_char=hill_chr
-                            ):
-                                new_t = hill_map.get(24, 24)
-                            else:
-                                rim_ridge = hill_mask5_vertical_ridge_tile_from_raw_cardinals(
-                                    ascii_lines, hx, hy, hill_char=hill_chr
-                                )
-                                if rim_ridge is not None:
-                                    new_t = rim_ridge
-                                else:
-                                    tn = base_hill_tile_ids[hy - 1][hx] if hy > 0 else None
-                                    ts = base_hill_tile_ids[hy + 1][hx] if hy + 1 < height else None
-                                    new_t = resolve_hill_vertical_ridge_tile_id(
-                                        tn, ts, hill_map.get(5, 9)
-                                    )
-                        elif amask == 10:
-                            tw = base_hill_tile_ids[hy][hx - 1] if hx > 0 else None
-                            te = base_hill_tile_ids[hy][hx + 1] if hx + 1 < width else None
-                            west_hr = _neighbor_is_horizontal_ridge(hx - 1, hy)
-                            east_hr = _neighbor_is_horizontal_ridge(hx + 1, hy)
-                            new_t = resolve_hill_horizontal_ridge_tile_id(
-                                tw, te, west_hr, east_hr, default_ridge_h
-                            )
-                        elif amask == 11:
-                            tw11 = base_hill_tile_ids[hy][hx - 1] if hx > 0 else None
-                            te11 = base_hill_tile_ids[hy][hx + 1] if hx + 1 < width else None
-                            m11 = resolve_hill_mask11_corner_extension_connect_tile_id(
-                                tw11,
-                                te11,
-                                w_corner_tile=mask11_w_corner_tile,
-                                e_extension_tile=mask11_e_extension_tile,
-                                connect_tile=mask11_extension_connect_tile,
-                            )
-                            if m11 is None:
-                                continue
-                            new_t = m11
-                        else:
-                            continue
-                        if new_t != base_hill_tile_ids[hy][hx]:
-                            base_hill_tile_ids[hy][hx] = new_t
-                            changed = True
-                if not changed:
-                    break
-
-            # Peninsula hill passes disabled for now — re-enable by setting _PENINSULA_HILL_PASSES to True.
-            _PENINSULA_HILL_PASSES = False
-            _peninsula_spine_cells: frozenset[tuple[int, int]] = frozenset()
-            _peninsula_protrusion_cells: frozenset[tuple[int, int]] = frozenset()
-            _peninsula_tip_snapshot: dict[tuple[int, int], int] | None = None
-            if _PENINSULA_HILL_PASSES:
-                _pv = _hill_cfg.get("peninsula_vertical_spine")
-                _pv_on = True
-                if _pv is False:
-                    _pv_on = False
-                elif isinstance(_pv, dict) and _pv.get("enabled") is False:
-                    _pv_on = False
-                _peninsula_spine_cells = frozenset()
-                if _pv_on:
-                    _p_chain = _hill_cfg.get("peninsula_chain_tile_ids")
-                    _p_chain_fs: frozenset[int] | None
-                    if _p_chain is not None and isinstance(_p_chain, list):
-                        _p_chain_fs = frozenset(int(x) for x in _p_chain)
-                    else:
-                        _p_chain_fs = None
-                    _p_get = (lambda k, d: int(_hill_cfg[k]) if _hill_cfg.get(k) is not None else d)
-                    if isinstance(_pv, dict):
-                        _ext = int(_pv.get("extend_tile", _p_get("peninsula_extend_tile", 24)))
-                        _cap = int(_pv.get("tee_side_cap_tile", _p_get("peninsula_tee_side_cap_tile", 6)))
-                        _tb = int(_pv.get("tee_both_sides", _p_get("peninsula_tee_both_sides", 16)))
-                        _te = int(_pv.get("tee_e_side", _p_get("peninsula_tee_e_side", 15)))
-                        _tw = int(_pv.get("tee_w_side", _p_get("peninsula_tee_w_side", 17)))
-                    else:
-                        _ext = _p_get("peninsula_extend_tile", 24)
-                        _cap = _p_get("peninsula_tee_side_cap_tile", 6)
-                        _tb = _p_get("peninsula_tee_both_sides", 16)
-                        _te = _p_get("peninsula_tee_e_side", 15)
-                        _tw = _p_get("peninsula_tee_w_side", 17)
-                    _peninsula_spine_cells = apply_hill_peninsula_vertical_spine_pass(
-                        ascii_lines,
-                        base_hill_tile_ids,
-                        width,
-                        height,
-                        hill_map,
-                        hill_char="I",
-                        chain_tile_ids=_p_chain_fs,
-                        extend_tile=_ext,
-                        side_cap_tile=_cap,
-                        tee_both_sides=_tb,
-                        tee_e_side=_te,
-                        tee_w_side=_tw,
-                    )
-
-                _pp_fix = _hill_cfg.get("peninsula_protrusion_fix", True)
-                _peninsula_protrusion_cells = frozenset()
-                if _pp_fix is not False:
-                    _pp_raw = _hill_cfg.get("peninsula_protrusion")
-                    _pp_tiles: HillPeninsulaProtrusionTileIds | None = None
-                    if isinstance(_pp_raw, dict):
-                        def _pi(key: str, default: int) -> int:
-                            v = _pp_raw.get(key)
-                            return int(v) if v is not None else default
-
-                        _pp_tiles = HillPeninsulaProtrusionTileIds(
-                            south_end_interior_n_tee=_pi("south_end_interior_n_tee", 21),
-                            south_end_interior_n_extender=_pi("south_end_interior_n_extender", 24),
-                            north_end_interior_s_tee=_pi("north_end_interior_s_tee", 21),
-                            north_end_interior_s_extender=_pi("north_end_interior_s_extender", 24),
-                            west_end_interior_e_tee=_pi("west_end_interior_e_tee", 18),
-                            west_end_interior_e_extender=_pi("west_end_interior_e_extender", 8),
-                            east_end_interior_w_tee=_pi("east_end_interior_w_tee", 19),
-                            east_end_interior_w_extender=_pi("east_end_interior_w_extender", 8),
-                        )
-                    _peninsula_protrusion_cells = apply_hill_peninsula_protrusion_adjacent_pass(
-                        ascii_lines,
-                        base_hill_tile_ids,
-                        width,
-                        height,
-                        hill_map,
-                        hill_char="I",
-                        tiles=_pp_tiles,
-                    )
-
-        if HILL_ENABLE_POST_FIRST_PASS and _PENINSULA_HILL_PASSES:
-            apply_hill_mask14_n_peninsula_connector_pass(
-                ascii_lines,
-                base_hill_tile_ids,
-                width,
-                height,
-                hill_char="I",
-                hill_cfg=_hill_cfg,
-            )
+                    base_hill_tile_ids[hy][hx] = tid
 
     for y, row in enumerate(ascii_lines):
         for x in range(width):
@@ -5625,26 +5620,17 @@ def paint_map_to_png(
                     raw_card = get_hill_adjacency_bitmask(
                         ascii_lines, x, y, hill_char="I", exclude_interior_hill_neighbors=False
                     )
-                auto_m = (
-                    hill_autotile_masks[y][x]
-                    if hill_autotile_masks is not None
-                    else compute_hill_autotile_mask(ascii_lines, x, y, hill_char="I")
-                )
-                if auto_m is None:
-                    auto_m = compute_hill_autotile_mask(ascii_lines, x, y, hill_char="I")
                 is_hill_interior = raw_card == HILL_INTERIOR_MASK
                 if grass_hill:
-                    tile_id = resolve_hill_paint_layer_tile_id(
+                    tile_id = resolve_hill_basic_mask_paint_tile_id(
                         ascii_lines,
                         x,
                         y,
-                        raw_cardinal_mask=raw_card,
-                        autotile_mask=auto_m,
-                        base_hill_tile_ids=base_hill_tile_ids,
+                        raw_cardinal_mask=int(raw_card),
                         hill_map=hill_map,
-                        post_first_pass=HILL_ENABLE_POST_FIRST_PASS,
-                        width=width,
-                        height=height,
+                        split_maps_by_shape=split_maps_by_shape,
+                        split_enabled_masks=split_enabled_masks,
+                        split_default_shape=split_default_shape,
                         hill_char="I",
                     )
                     if tile_id is None:
