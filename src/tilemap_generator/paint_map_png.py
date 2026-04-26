@@ -20,105 +20,6 @@ def load_bitmask_config(path: Path) -> dict[str, Any]:
     return data
 
 
-def parse_hill_diagonal_inset_2x2_patterns(
-    hill_cfg: dict[str, Any] | None,
-) -> dict[str, dict[str, int | None]] | None:
-    """Parse ``hill.diagonal_inset_2x2`` from terrain config.
-
-    Each orientation (``nw``/``ne``/``sw``/``se``) maps ``tl``/``tr``/``bl``/``br`` to a hill tile id
-    or grass: ``null``, ``\"grass\"``, or ``\"G\"`` means that cell is grass; positive int = hill
-    sheet tile (1-based). Consumed by :func:`paint_map_to_png` for 2×2 overlays at diagonal insets.
-    """
-    if not isinstance(hill_cfg, dict):
-        return None
-    raw = hill_cfg.get("diagonal_inset_2x2")
-    if not isinstance(raw, dict):
-        return None
-    out: dict[str, dict[str, int | None]] = {}
-    for orient in ("nw", "ne", "sw", "se"):
-        sub = raw.get(orient)
-        if not isinstance(sub, dict):
-            continue
-        cells: dict[str, int | None] = {}
-        for pos in ("tl", "tr", "bl", "br"):
-            v = sub.get(pos)
-            if v is None or v == "grass" or v == "G":
-                cells[pos] = None
-            elif isinstance(v, bool):
-                continue
-            elif isinstance(v, int) and v >= 1:
-                cells[pos] = v
-        if len(cells) == 4:
-            out[orient] = cells
-    return out if out else None
-
-
-def derive_hill_diagonal_inset_corner_tiles(
-    patterns: dict[str, dict[str, int | None]] | None,
-) -> dict[str, int]:
-    """Map inset orientation → grass corner tile id (1-based) from ``hill.diagonal_inset_2x2``.
-
-    Each orientation's concave-corner cell in the 2×2 grid: nw→``br``, ne→``bl``, sw→``tr``, se→``tl``.
-    Missing entries use defaults 34–37 (must match :func:`apply_hill_diagonal_inset_neighbor_rules`).
-    """
-    defaults = {"nw": 34, "ne": 35, "sw": 36, "se": 37}
-    if not patterns:
-        return dict(defaults)
-    key_for: dict[str, str] = {"nw": "br", "ne": "bl", "sw": "tr", "se": "tl"}
-    out = dict(defaults)
-    for orient, pos in key_for.items():
-        sub = patterns.get(orient)
-        if isinstance(sub, dict):
-            v = sub.get(pos)
-            if isinstance(v, int) and v >= 1:
-                out[orient] = v
-    return out
-
-
-def _hill_diagonal_inset_2x2_origin(orient: str, gx: int, gy: int) -> tuple[int, int]:
-    """Top-left map cell of the 2×2 block for a grass inset at ``(gx, gy)``.
-
-    ``hill.diagonal_inset_2x2`` places the inset corner tile at ``br`` (nw), ``bl`` (ne),
-    ``tr`` (sw), or ``tl`` (se) — the tagged grass cell is exactly that corner, so the
-    block origin is offset so ``(gx, gy)`` matches that corner (see
-    :func:`derive_hill_diagonal_inset_corner_tiles`).
-    """
-    if orient == "nw":
-        return gx - 1, gy - 1
-    if orient == "ne":
-        return gx, gy - 1
-    if orient == "sw":
-        return gx - 1, gy
-    if orient == "se":
-        return gx, gy
-    return gx, gy
-
-
-def _diagonal_inset_pattern_key_for_geometry(
-    geometry_orient: str,
-    *,
-    swap_sw_ne: bool,
-    swap_nw_se: bool,
-) -> str:
-    """Map notch geometry to ``hill.diagonal_inset_2x2`` sub-key.
-
-    Hill sheets often label inset corner art opposite to this engine's geometry names:
-    when ``swap_sw_ne`` is True, SW geometry uses the ``ne`` pattern block and vice versa;
-    when ``swap_nw_se`` is True, NW geometry uses the ``se`` block and vice versa.
-    """
-    if swap_sw_ne:
-        if geometry_orient == "sw":
-            return "ne"
-        if geometry_orient == "ne":
-            return "sw"
-    if swap_nw_se:
-        if geometry_orient == "nw":
-            return "se"
-        if geometry_orient == "se":
-            return "nw"
-    return geometry_orient
-
-
 def classify_hill_split_shape_key(
     *,
     raw_mask: int,
@@ -171,266 +72,6 @@ def resolve_hill_split_mask_tile_id(
     if isinstance(fallback, dict) and m in fallback:
         return int(fallback[m])
     return None
-
-
-def _rim_refine_br_for_diagonal_overlay(
-    ascii_lines: list[str],
-    qx: int,
-    qy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str:
-    """Same semantics as ``apply_hill_diagonal_inset_neighbor_rules`` ``_grass_or_hill_at``: OOB → hill."""
-    grass_like = frozenset("G.TFP.") | frozenset("SJMHCDN")
-    if not (0 <= qx < width and 0 <= qy < height):
-        return "hill"
-    row = ascii_lines[qy]
-    pad = row.ljust(width, ".")
-    c = pad[qx] if qx < len(pad) else "."
-    if c in grass_like:
-        return "grass"
-    return "hill"
-
-
-def _inset_n_rim_column_has_hill_north(
-    ascii_lines: list[str],
-    col_x: int,
-    start_cy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> bool:
-    """Walk north from ``start_cy`` in column ``col_x``; True iff ``hill_char`` appears before water or OOB.
-
-    ``T``/``F``, paths, POI, ``B``/shore, etc. do **not** stop the scan (forest does not hide plateau
-    above), so the NW/NE N-rim / overlay **TR** slot can use vertical cliff **9** when bulk is past a
-    tree row. Water breaks the column (no bulk across). OOB north of ``start_cy`` counts as bulk.
-    """
-    if start_cy < 0:
-        return True
-    cy = start_cy
-    while cy >= 0:
-        row = ascii_lines[cy] if cy < len(ascii_lines) else ""
-        pad = row.ljust(width, ".")
-        c = pad[col_x] if col_x < len(pad) else "."
-        if c == hill_char:
-            return True
-        if c in WATER_CHARS:
-            return False
-        cy -= 1
-    return False
-
-
-def _inset_overlay_probe_grass_or_hill(
-    ascii_lines: list[str],
-    cx: int,
-    cy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """Return ``\"grass\"``, ``\"hill\"``, or ``None`` (OOB, water, or other terrain)."""
-    if not (0 <= cx < width and 0 <= cy < height):
-        return None
-    row = ascii_lines[cy]
-    ch = row[cx] if cx < len(row) else "."
-    if ch in WATER_CHARS:
-        return None
-    if ch in ("G", "."):
-        return "grass"
-    if ch == hill_char:
-        return "hill"
-    return None
-
-
-def _ne_inset_br_probe_one_row_above(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """NE 2×2 origin ``(oxx, oyy)``: BR at ``(oxx+1, oyy+1)``; sample one row above BR (same column as TR)."""
-    br_x, br_y = oxx + 1, oyy + 1
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, br_x, br_y - 1, width, height, hill_char=hill_char
-    )
-
-
-def _ne_inset_tl_probe_one_column_left(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """NE 2×2 origin ``(oxx, oyy)``: TL at ``(oxx, oyy)``; sample one column left of TL (hill west of TL)."""
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, oxx - 1, oyy, width, height, hill_char=hill_char
-    )
-
-
-def _sw_inset_tl_probe_two_rows_below(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """SW 2×2 origin ``(oxx, oyy)``: TL at ``(oxx, oyy)``; sample two rows below TL."""
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, oxx, oyy + 2, width, height, hill_char=hill_char
-    )
-
-
-def _sw_inset_turn_east_from_grass_notch(
-    ascii_lines: list[str],
-    grass_x: int,
-    grass_y: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> bool:
-    """SW grass notch ``(grass_x, grass_y)``: open two cells north + hill at (+2,-1) → cliff turns E.
-
-    Matches sheet cases where the south face / BR overlay should use the **hill** corner (e.g. tile
-    **6**) instead of a straight vertical (**9**): bulk northeast of the notch while the cell two
-    rows north is **not** hill (``(grass_x, grass_y-2)``). North **above the map** counts as open so
-    top-edge insets still match. Non-hill land includes shoreline ``B``/``L``/``R`` and paths, same
-    spirit as rim second pass (anything except ``I`` / water is “open” for this probe). Rows are
-    read with ``ljust(width, \".\")`` so ragged ASCII lines do not mis-detect.
-    """
-    nx, y_n2 = grass_x, grass_y - 2
-    hx, hy = grass_x + 2, grass_y - 1
-
-    def _ch(px: int, py: int) -> str | None:
-        if not (0 <= px < width and 0 <= py < height):
-            return None
-        row = ascii_lines[py]
-        pad = row.ljust(width, ".")
-        c = pad[px] if px < len(pad) else "."
-        return c if c != "" else "."
-
-    if not (0 <= nx < width and 0 <= hx < width and 0 <= hy < height):
-        return False
-
-    if y_n2 < 0:
-        north_open = True
-    elif y_n2 >= height:
-        return False
-    else:
-        ch_n = _ch(nx, y_n2)
-        if ch_n is None:
-            return False
-        if ch_n in WATER_CHARS:
-            return False
-        north_open = ch_n != hill_char
-
-    if not north_open:
-        return False
-
-    ch_h = _ch(hx, hy)
-    return ch_h == hill_char
-
-
-def _sw_inset_br_probe_two_columns_left(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """SW 2×2 origin ``(oxx, oyy)``: BR at ``(oxx+1, oyy+1)``; sample two columns left of BR.
-
-    Also returns ``\"hill\"`` when :func:`_sw_inset_turn_east_from_grass_notch` applies (bulk NE
-    of the SW grass cell) so the BR overlay uses the hill corner tile instead of a vertical.
-    """
-    br_x, br_y = oxx + 1, oyy + 1
-    grass_x, grass_y = oxx + 1, oyy
-    if _sw_inset_turn_east_from_grass_notch(
-        ascii_lines, grass_x, grass_y, width, height, hill_char=hill_char
-    ):
-        return "hill"
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, br_x - 2, br_y, width, height, hill_char=hill_char
-    )
-
-
-def _se_inset_tr_probe_one_row_below(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """SE 2×2 origin ``(oxx, oyy)``: TR at ``(oxx+1, oyy)``; sample one row below TR."""
-    tr_x, tr_y = oxx + 1, oyy
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, tr_x, tr_y + 1, width, height, hill_char=hill_char
-    )
-
-
-def _se_inset_bl_probe_one_column_left(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """SE 2×2 origin ``(oxx, oyy)``: BL at ``(oxx, oyy+1)``; sample one column left of BL."""
-    bl_x, bl_y = oxx, oyy + 1
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, bl_x - 1, bl_y, width, height, hill_char=hill_char
-    )
-
-
-def _nw_inset_tr_probe_two_columns_left(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """NW 2×2 origin ``(oxx, oyy)``: TR at ``(oxx+1, oyy)``; sample two columns left of TR."""
-    tr_x, tr_y = oxx + 1, oyy
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, tr_x - 2, tr_y, width, height, hill_char=hill_char
-    )
-
-
-def _nw_inset_bl_probe_two_rows_above(
-    ascii_lines: list[str],
-    oxx: int,
-    oyy: int,
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-) -> str | None:
-    """NW 2×2 origin ``(oxx, oyy)``: BL at ``(oxx, oyy+1)``; sample two rows above BL."""
-    bl_x, bl_y = oxx, oyy + 1
-    return _inset_overlay_probe_grass_or_hill(
-        ascii_lines, bl_x, bl_y - 2, width, height, hill_char=hill_char
-    )
 
 
 def load_terrain_config(path: Path, project_root: Path | None = None) -> dict[str, Any]:
@@ -748,12 +389,6 @@ HILL_MAP: dict[int, int] = {
     15: 14,  # mask 15: 4-way connector (not used for deep plateau interior — painter uses grass)
 }
 
-# Debug / local test: when True, only **NW** diagonal inset is active (SW/SE/NE grass notches,
-# their rim second passes, and adjacent-corner edge rewrites are skipped) in
-# :func:`apply_hill_diagonal_inset_neighbor_rules` (tests / direct callers only — not used in paint).
-# Flip to ``True`` for NW-only experiments; keep ``False`` for normal maps and CI.
-DIAGONAL_INSET_GEOMETRY_NW_ONLY: bool = False
-
 # Lake/pond shoreline (3x3 around center 11): 4,5,6 top, 10,12 mid, 16,17,18 bottom
 # Interior corners use 4,6,16,18. Same N=1,E=2,S=4,W=8 bitmask -> lake tile index (1-based)
 LAKE_SHORELINE_MAP: dict[int, int] = {
@@ -886,6 +521,40 @@ def load_grass_from_sheet(
         end = max(start, min(end, len(all_tiles)))
         return all_tiles[start - 1 : end]
     return all_tiles
+
+
+def load_water_tiles(water_path: Path, tile_size: int) -> list[Any]:
+    """Load water tiles from a PNG sheet or single PNG."""
+    return load_grass_from_sheet(water_path, tile_size)
+
+
+def load_dirt_tiles(dirt_path: Path, tile_size: int) -> list[Any]:
+    """Load path/dirt autotile tiles from a PNG sheet."""
+    return load_grass_from_sheet(dirt_path, tile_size)
+
+
+def get_path_bitmask(ascii_lines: list[str], x: int, y: int) -> int:
+    """Return 4-bit NESW adjacency for path cells."""
+    height = len(ascii_lines)
+    width = max((len(row) for row in ascii_lines), default=0)
+
+    def _is_path(px: int, py: int) -> bool:
+        if not (0 <= px < width and 0 <= py < height):
+            return False
+        row = ascii_lines[py]
+        ch = row[px] if px < len(row) else "."
+        return ch in PATH_CHARS or ch in POI_PATH_BASE
+
+    mask = 0
+    if _is_path(x, y - 1):
+        mask |= 1
+    if _is_path(x + 1, y):
+        mask |= 2
+    if _is_path(x, y + 1):
+        mask |= 4
+    if _is_path(x - 1, y):
+        mask |= 8
+    return mask
 
 
 def _ocean_connected_water_cells(
@@ -2184,20 +1853,8 @@ def resolve_hill_mask11_corner_extension_connect_tile_id(
     return None
 
 
-# Raw cardinal hill masks with exactly one hill neighbor (peninsula tips). Used after diagonal
-# inset may overwrite the south spine tile id (e.g. vertical 7) while geometry stays a tip.
+# Raw cardinal hill masks with exactly one hill neighbor (peninsula tips).
 HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS: frozenset[int] = frozenset({1, 2, 4, 8})
-
-# (inset geometry key, rim direction n/e/s/w, raw cardinal hill mask): skip rim override — the
-# cell is a peninsula tip in ASCII and the inset rim slot would paste wrong cliff (e.g. SW W rim
-# on an N-only tip). Keep narrow so real SW/SE/NW/NE corners still get rim art.
-_DIAGONAL_INSET_SKIP_RIM_PENINSULA_TIP_TRIPLES: frozenset[tuple[str, str, int]] = frozenset(
-    {
-        ("sw", "w", 1),  # N-only hill; grass east (SW); W rim would replace tee / tip art
-        ("se", "e", 1),  # N-only hill; grass west (SE); E rim would replace wrong cliff
-        ("ne", "n", 1),  # N-only hill; grass south (NE checkerboard); N rim → wrong spine (9)
-    }
-)
 
 
 def resolve_hill_mask14_n_peninsula_connector_tile_id(
@@ -2218,9 +1875,7 @@ def resolve_hill_mask14_n_peninsula_connector_tile_id(
     ``ew_ridge_tile`` (default 8), and **south** matches either:
 
     - resolved tile id in ``south_tiles`` (default **10** and **24**), or
-    - ``south_raw_cardinal_mask`` in ``south_tip_raw_masks`` (default raw masks **1, 2, 4, 8** —
-      one cardinal hill neighbor), so inset/spine overrides that clobber the south tile id still
-      allow the connector after a late pass.
+    - ``south_raw_cardinal_mask`` in ``south_tip_raw_masks`` (default raw masks **1, 2, 4, 8**).
 
     Otherwise None (keep ``hill_map[14]`` / strip spine / etc.).
 
@@ -2254,11 +1909,7 @@ def apply_hill_mask14_n_peninsula_connector_pass(
     hill_char: str = "I",
     hill_cfg: dict[str, Any] | None = None,
 ) -> None:
-    """Apply :func:`resolve_hill_mask14_n_peninsula_connector_tile_id` to mask-14 hill cells.
-
-    Intended to run **after** peninsula passes and diagonal inset + vertical spine fix so the south
-    neighbor can be matched by raw cardinal tip mask when tile ids were overwritten (e.g. tile 7).
-    """
+    """Apply :func:`resolve_hill_mask14_n_peninsula_connector_tile_id` to mask-14 hill cells."""
     cfg = hill_cfg or {}
     if cfg.get("mask14_n_peninsula_connector", True) is False:
         return
@@ -2310,89 +1961,6 @@ def apply_hill_mask14_n_peninsula_connector_pass(
             )
             if m is not None:
                 base_hill_tile_ids[hy][hx] = m
-
-
-def collect_hill_raw_peninsula_tip_tile_snapshot(
-    ascii_lines: list[str],
-    base_hill_tile_ids: list[list[int | None]],
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-    tip_masks: frozenset[int] | None = None,
-    corridor_cells: frozenset[tuple[int, int]] | None = None,
-) -> dict[tuple[int, int], int]:
-    """Capture ``base_hill_tile_ids`` for hill cells whose raw cardinal mask is a peninsula tip.
-
-    Call **after** ridge / peninsula spine / protrusion passes and **before**
-    :func:`apply_hill_diagonal_inset_neighbor_rules`, then pass the dict to
-    :func:`apply_hill_peninsula_post_inset_tile_restore_pass` after inset + spine fix.
-
-    Optional ``corridor_cells``: ``(x, y)`` union (e.g. spine + protrusion modified cells) merged
-    into the snapshot so inset rim overrides cannot permanently replace peninsula tee / extender
-    art on those coordinates.
-    """
-    tips = tip_masks if tip_masks is not None else HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS
-    out: dict[tuple[int, int], int] = {}
-    for hy in range(height):
-        for hx in range(width):
-            tid = base_hill_tile_ids[hy][hx]
-            if tid is None:
-                continue
-            row = ascii_lines[hy]
-            if (row[hx] if hx < len(row) else ".") != hill_char:
-                continue
-            rm = get_hill_adjacency_bitmask(
-                ascii_lines,
-                hx,
-                hy,
-                hill_char=hill_char,
-                exclude_interior_hill_neighbors=False,
-            )
-            if rm in tips:
-                out[(hx, hy)] = int(tid)
-    if corridor_cells:
-        for cx, cy in corridor_cells:
-            if not (0 <= cy < height and 0 <= cx < width):
-                continue
-            ct = base_hill_tile_ids[cy][cx]
-            if ct is None:
-                continue
-            row = ascii_lines[cy]
-            if (row[cx] if cx < len(row) else ".") != hill_char:
-                continue
-            out[(cx, cy)] = int(ct)
-    return out
-
-
-def apply_hill_peninsula_post_inset_tile_restore_pass(
-    base_hill_tile_ids: list[list[int | None]],
-    width: int,
-    height: int,
-    snapshot: dict[tuple[int, int], int],
-    *,
-    skip_coords: frozenset[tuple[int, int]] | None = None,
-) -> None:
-    """Restore tile ids from ``snapshot`` (in-place). Skips missing / ``None`` grid cells.
-
-    Snapshots may include raw tips plus peninsula spine / protrusion corridor cells so diagonal
-    inset passes do not leave those tiles overwritten by rim continuation rules.
-
-    ``skip_coords``: diagonal-inset rim overrides (same set passed to
-    :func:`apply_hill_vertical_spine_tile_fix`). Those cells must **not** be restored, or a spine
-    corridor tile that is also an SW/SE **south** rim would revert from grass-cap **4** back to
-    vertical **9** after :func:`apply_hill_diagonal_inset_neighbor_rules`.
-    """
-    skip = skip_coords or frozenset()
-    for (hx, hy), tid in snapshot.items():
-        if not (0 <= hy < height and 0 <= hx < width):
-            continue
-        if (hx, hy) in skip:
-            continue
-        if base_hill_tile_ids[hy][hx] is None:
-            continue
-        base_hill_tile_ids[hy][hx] = tid
-
 
 # Mask 11 default tile (``hill_map[11]``): when projects override it to a tee, require a cardinal
 # hill neighbor whose first-pass tile is in this set; otherwise replace it with ``hill_map[10]``.
@@ -2522,8 +2090,7 @@ def apply_hill_peninsula_vertical_spine_pass(
     Runs after vertical ridge pass so extend / 15–17 override 9/7. Skips cells that use mask-5
     tile 24 (open diagonals). In-place.
 
-    Returns coordinates ``(x, y)`` where this pass wrote a new tile id (for merging into the
-    post-inset restore snapshot so diagonal inset rim rules do not clobber peninsula spine art).
+    Returns coordinates ``(x, y)`` where this pass wrote a new tile id.
     """
     chain = chain_tile_ids if chain_tile_ids is not None else HILL_PENINSULA_CHAIN_TILE_IDS
     modified: set[tuple[int, int]] = set()
@@ -2615,6 +2182,462 @@ class HillPeninsulaProtrusionTileIds:
     # Mask 8 tip (hill W, “east” end): interior west; N/S both hill → west tee 19; both grass → 8.
     east_end_interior_w_tee: int = 19
     east_end_interior_w_extender: int = 8
+
+
+@dataclasses.dataclass(frozen=True)
+class HillPeninsulaConnectorTileIds:
+    """Peninsula connector art selected from cardinal endpoint anchors and neighboring path tiles."""
+
+    north_tip_both_sides: int = 16
+    north_tip_left_open: int = 39
+    north_tip_right_open: int = 41
+    north_tip_extension: int = 24
+    south_tip_both_sides: int = 21
+    south_tip_left_open: int = 43
+    south_tip_right_open: int = 45
+    south_tip_extension: int = 24
+    east_tip_both_sides: int = 18
+    east_tip_top_open: int = 40
+    east_tip_bottom_open: int = 44
+    east_tip_extension: int = 23
+    west_tip_both_sides: int = 19
+    west_tip_top_open: int = 38
+    west_tip_bottom_open: int = 42
+    west_tip_extension: int = 23
+    elbow_e_s: int = 25
+    elbow_w_s: int = 27
+    elbow_e_n: int = 31
+    elbow_w_n: int = 33
+    tee_w_n_e: int = 32
+    tee_w_s_e: int = 26
+    tee_s_e_n: int = 28
+    tee_s_w_n: int = 30
+    connector_4way: int = 29
+
+
+DEFAULT_HILL_PENINSULA_PATH_TILE_IDS: frozenset[int] = frozenset(
+    {
+        10,
+        11,
+        12,
+        13,
+        16,
+        18,
+        19,
+        21,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+    }
+)
+
+
+def parse_hill_peninsula_connector_tile_ids(
+    hill_cfg: dict[str, Any] | None,
+) -> HillPeninsulaConnectorTileIds:
+    """Parse optional ``hill.peninsula_connectors`` tile id overrides."""
+    if not isinstance(hill_cfg, dict):
+        return HillPeninsulaConnectorTileIds()
+    raw = hill_cfg.get("peninsula_connectors")
+    if not isinstance(raw, dict):
+        return HillPeninsulaConnectorTileIds()
+    defaults = dataclasses.asdict(HillPeninsulaConnectorTileIds())
+    parsed: dict[str, int] = {}
+    for key, default in defaults.items():
+        value = raw.get(key, default)
+        if isinstance(value, bool):
+            parsed[key] = int(default)
+            continue
+        try:
+            parsed[key] = int(value)
+        except (TypeError, ValueError):
+            parsed[key] = int(default)
+    return HillPeninsulaConnectorTileIds(**parsed)
+
+
+def parse_hill_peninsula_path_tile_ids(
+    hill_cfg: dict[str, Any] | None,
+    connector_tiles: HillPeninsulaConnectorTileIds | None = None,
+) -> frozenset[int]:
+    """Parse optional ``hill.peninsula_path_tile_ids`` used by elbow/tee/cross classification."""
+    defaults = set(DEFAULT_HILL_PENINSULA_PATH_TILE_IDS)
+    if connector_tiles is not None:
+        defaults.update(int(v) for v in dataclasses.asdict(connector_tiles).values())
+    if not isinstance(hill_cfg, dict):
+        return frozenset(defaults)
+    raw = hill_cfg.get("peninsula_path_tile_ids")
+    if not isinstance(raw, (list, tuple, set)):
+        return frozenset(defaults)
+    out: set[int] = set()
+    for value in raw:
+        if isinstance(value, bool):
+            continue
+        try:
+            out.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return frozenset(out or defaults)
+
+
+def resolve_hill_peninsula_connector_tile_id(
+    neighbor_mask: int,
+    tiles: HillPeninsulaConnectorTileIds | None = None,
+) -> int | None:
+    """Resolve peninsula connector tile from NESW neighbor mask of adjacent peninsula path tiles."""
+    t = tiles if tiles is not None else HillPeninsulaConnectorTileIds()
+    return {
+        6: t.elbow_e_s,
+        12: t.elbow_w_s,
+        3: t.elbow_e_n,
+        9: t.elbow_w_n,
+        11: t.tee_w_n_e,
+        14: t.tee_w_s_e,
+        7: t.tee_s_e_n,
+        13: t.tee_s_w_n,
+        15: t.connector_4way,
+    }.get(int(neighbor_mask) & 15)
+
+
+def apply_hill_peninsula_connector_pass(
+    ascii_lines: list[str],
+    base_hill_tile_ids: list[list[int | None]],
+    width: int,
+    height: int,
+    hill_char: str = "I",
+    *,
+    tiles: HillPeninsulaConnectorTileIds | None = None,
+    path_tile_ids: frozenset[int] | None = None,
+) -> frozenset[tuple[int, int]]:
+    """Use cardinal endpoint tiles as anchors and rewrite the inward connector hill cell.
+
+    Endpoint tiles 10–13 remain unchanged. The adjacent hill cell toward the hill mass becomes the
+    straight extender, mixed elbow, or tee connector selected by the side cells at that inward step.
+    A second classifier handles peninsula-path elbow / tee / cross cells from neighboring path tiles.
+    """
+    t = tiles if tiles is not None else HillPeninsulaConnectorTileIds()
+    path_ids = path_tile_ids if path_tile_ids is not None else DEFAULT_HILL_PENINSULA_PATH_TILE_IDS
+    touched: set[tuple[int, int]] = set()
+
+    def _set_if_hill(px: int, py: int, tile_id: int) -> bool:
+        if not (0 <= px < width and 0 <= py < height):
+            return False
+        if base_hill_tile_ids[py][px] is None:
+            return False
+        if not is_hill_char(ascii_lines, px, py, hill_char):
+            return False
+        base_hill_tile_ids[py][px] = tile_id
+        touched.add((px, py))
+        return True
+
+    def _walk_from_anchor(
+        ix: int,
+        iy: int,
+        step_x: int,
+        step_y: int,
+        side_a: tuple[int, int],
+        side_b: tuple[int, int],
+        both_sides_tile: int,
+        side_a_open_tile: int,
+        side_b_open_tile: int,
+        extension_tile: int,
+    ) -> None:
+        cx, cy = ix, iy
+        while 0 <= cx < width and 0 <= cy < height:
+            if base_hill_tile_ids[cy][cx] is None:
+                return
+            if not is_hill_char(ascii_lines, cx, cy, hill_char):
+                return
+            side_a_hill = is_hill_char(ascii_lines, cx + side_a[0], cy + side_a[1], hill_char)
+            side_b_hill = is_hill_char(ascii_lines, cx + side_b[0], cy + side_b[1], hill_char)
+            if side_a_hill and side_b_hill:
+                _set_if_hill(cx, cy, both_sides_tile)
+                return
+            if not side_a_hill and side_b_hill:
+                _set_if_hill(cx, cy, side_a_open_tile)
+                return
+            if side_a_hill and not side_b_hill:
+                _set_if_hill(cx, cy, side_b_open_tile)
+                return
+            if not _set_if_hill(cx, cy, extension_tile):
+                return
+            cx += step_x
+            cy += step_y
+
+    for hy in range(height):
+        for hx in range(width):
+            anchor = base_hill_tile_ids[hy][hx]
+            if anchor not in (10, 11, 12, 13):
+                continue
+            if not is_hill_char(ascii_lines, hx, hy, hill_char):
+                continue
+            raw_tip = get_hill_adjacency_bitmask(
+                ascii_lines,
+                hx,
+                hy,
+                hill_char=hill_char,
+                exclude_interior_hill_neighbors=False,
+            )
+
+            if raw_tip == 4 or (raw_tip not in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and anchor == 10):
+                _walk_from_anchor(
+                    hx,
+                    hy + 1,
+                    0,
+                    1,
+                    (-1, 0),
+                    (1, 0),
+                    t.north_tip_both_sides,
+                    t.north_tip_left_open,
+                    t.north_tip_right_open,
+                    t.north_tip_extension,
+                )
+            elif raw_tip == 1 or (raw_tip not in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and anchor == 12):
+                _walk_from_anchor(
+                    hx,
+                    hy - 1,
+                    0,
+                    -1,
+                    (-1, 0),
+                    (1, 0),
+                    t.south_tip_both_sides,
+                    t.south_tip_left_open,
+                    t.south_tip_right_open,
+                    t.south_tip_extension,
+                )
+            elif raw_tip == 8 or (raw_tip not in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and anchor == 11):
+                _walk_from_anchor(
+                    hx - 1,
+                    hy,
+                    -1,
+                    0,
+                    (0, -1),
+                    (0, 1),
+                    t.east_tip_both_sides,
+                    t.east_tip_top_open,
+                    t.east_tip_bottom_open,
+                    t.east_tip_extension,
+                )
+            elif raw_tip == 2 or (raw_tip not in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and anchor == 13):
+                _walk_from_anchor(
+                    hx + 1,
+                    hy,
+                    1,
+                    0,
+                    (0, -1),
+                    (0, 1),
+                    t.west_tip_both_sides,
+                    t.west_tip_top_open,
+                    t.west_tip_bottom_open,
+                    t.west_tip_extension,
+                )
+
+    for hy in range(height):
+        for hx in range(width):
+            current_tile = base_hill_tile_ids[hy][hx]
+            if current_tile is None:
+                continue
+            promotable_touched_tiles = frozenset(
+                {
+                    16,
+                    18,
+                    19,
+                    21,
+                    23,
+                    24,
+                    38,
+                    39,
+                    40,
+                    41,
+                    42,
+                    43,
+                    44,
+                    45,
+                }
+            )
+            if (hx, hy) in touched and current_tile not in promotable_touched_tiles:
+                continue
+            if current_tile in (10, 11, 12, 13):
+                continue
+            if not is_hill_char(ascii_lines, hx, hy, hill_char):
+                continue
+            neighbor_mask = 0
+            for bit, nx, ny in (
+                (1, hx, hy - 1),
+                (2, hx + 1, hy),
+                (4, hx, hy + 1),
+                (8, hx - 1, hy),
+            ):
+                if 0 <= nx < width and 0 <= ny < height:
+                    nt = base_hill_tile_ids[ny][nx]
+                    if nt is not None and nt in path_ids:
+                        neighbor_mask |= bit
+            connector = resolve_hill_peninsula_connector_tile_id(neighbor_mask, t)
+            if connector is not None:
+                base_hill_tile_ids[hy][hx] = connector
+                touched.add((hx, hy))
+
+    return frozenset(touched)
+
+
+@dataclasses.dataclass(frozen=True)
+class HillInset2x2Rule:
+    """Tile-id rule for one 2x2 hill inset shape."""
+
+    edge_a: frozenset[int]
+    edge_b: frozenset[int]
+    out_tile: int
+
+
+@dataclasses.dataclass(frozen=True)
+class HillInset2x2Rules:
+    """NW/NE/SE/SW 2x2 hill inset rules."""
+
+    nw: HillInset2x2Rule = dataclasses.field(
+        default_factory=lambda: HillInset2x2Rule(frozenset({39, 2, 9}), frozenset({38, 2, 8}), 34)
+    )
+    ne: HillInset2x2Rule = dataclasses.field(
+        default_factory=lambda: HillInset2x2Rule(frozenset({41, 3, 7}), frozenset({40, 3, 6}), 35)
+    )
+    se: HillInset2x2Rule = dataclasses.field(
+        default_factory=lambda: HillInset2x2Rule(frozenset({44, 5, 8}), frozenset({45, 5, 7}), 37)
+    )
+    sw: HillInset2x2Rule = dataclasses.field(
+        default_factory=lambda: HillInset2x2Rule(frozenset({42, 4, 8}), frozenset({43, 4, 9}), 36)
+    )
+
+
+def parse_hill_inset_2x2_rules(hill_cfg: dict[str, Any] | None) -> HillInset2x2Rules:
+    """Parse optional ``hill.inset_2x2_rules`` overrides."""
+    defaults = HillInset2x2Rules()
+    if not isinstance(hill_cfg, dict):
+        return defaults
+    raw = hill_cfg.get("inset_2x2_rules")
+    if not isinstance(raw, dict):
+        return defaults
+
+    def _parse_rule(key: str, default: HillInset2x2Rule) -> HillInset2x2Rule:
+        item = raw.get(key)
+        if not isinstance(item, dict):
+            return default
+
+        def _int_set(name: str, fallback: frozenset[int]) -> frozenset[int]:
+            value = item.get(name)
+            if not isinstance(value, (list, tuple, set)):
+                return fallback
+            out: set[int] = set()
+            for v in value:
+                if isinstance(v, bool):
+                    continue
+                try:
+                    out.add(int(v))
+                except (TypeError, ValueError):
+                    continue
+            return frozenset(out or fallback)
+
+        out_raw = item.get("out_tile", default.out_tile)
+        try:
+            out_tile = int(out_raw)
+        except (TypeError, ValueError):
+            out_tile = default.out_tile
+        return HillInset2x2Rule(
+            edge_a=_int_set("edge_a", default.edge_a),
+            edge_b=_int_set("edge_b", default.edge_b),
+            out_tile=out_tile,
+        )
+
+    return HillInset2x2Rules(
+        nw=_parse_rule("nw", defaults.nw),
+        ne=_parse_rule("ne", defaults.ne),
+        se=_parse_rule("se", defaults.se),
+        sw=_parse_rule("sw", defaults.sw),
+    )
+
+
+def apply_hill_inset_2x2_pass(
+    ascii_lines: list[str],
+    base_hill_tile_ids: list[list[int | None]],
+    width: int,
+    height: int,
+    *,
+    rules: HillInset2x2Rules | None = None,
+    hill_char: str = "I",
+) -> frozenset[tuple[int, int]]:
+    """Apply 2x2 hill inset rules to the resolved hill grid."""
+    r = rules if rules is not None else HillInset2x2Rules()
+    source = [row[:] for row in base_hill_tile_ids]
+    touched: set[tuple[int, int]] = set()
+
+    def _tile(px: int, py: int) -> int | None:
+        if not (0 <= px < width and 0 <= py < height):
+            return None
+        return source[py][px]
+
+    def _is_grass(px: int, py: int) -> bool:
+        if not (0 <= px < width and 0 <= py < height):
+            return True
+        if not is_hill_char(ascii_lines, px, py, hill_char):
+            return True
+        return source[py][px] is None
+
+    def _is_target_hill(px: int, py: int) -> bool:
+        if not (0 <= px < width and 0 <= py < height):
+            return False
+        return is_hill_char(ascii_lines, px, py, hill_char)
+
+    def _set(px: int, py: int, tile_id: int) -> None:
+        if _is_target_hill(px, py):
+            base_hill_tile_ids[py][px] = tile_id
+            touched.add((px, py))
+
+    for y in range(max(0, height - 1)):
+        for x in range(max(0, width - 1)):
+            tl = (x, y)
+            tr = (x + 1, y)
+            bl = (x, y + 1)
+            br = (x + 1, y + 1)
+
+            if (
+                _is_grass(*tl)
+                and _tile(*tr) in r.nw.edge_a
+                and _tile(*bl) in r.nw.edge_b
+            ):
+                _set(*br, r.nw.out_tile)
+            if (
+                _is_grass(*tr)
+                and _tile(*tl) in r.ne.edge_a
+                and _tile(*br) in r.ne.edge_b
+            ):
+                _set(*bl, r.ne.out_tile)
+            if (
+                _is_grass(*br)
+                and _tile(*tr) in r.se.edge_a
+                and _tile(*bl) in r.se.edge_b
+            ):
+                _set(*tl, r.se.out_tile)
+            if (
+                _is_grass(*bl)
+                and _tile(*tl) in r.sw.edge_a
+                and _tile(*br) in r.sw.edge_b
+            ):
+                _set(*tr, r.sw.out_tile)
+
+    return frozenset(touched)
 
 
 def apply_hill_peninsula_protrusion_adjacent_pass(
@@ -2720,693 +2743,6 @@ def apply_hill_peninsula_protrusion_adjacent_pass(
     return frozenset(touched)
 
 
-def _merge_diagonal_inset_adjacent_corner_to_edge(
-    user: dict[str, object] | None,
-) -> dict[str, dict[str, tuple[frozenset[int], int]]]:
-    """Build per-inset direction rules: ``from`` tile id(s) → ``to`` cardinal edge tile id."""
-    defaults: dict[str, dict[str, tuple[frozenset[int], int]]] = {
-        "nw": {
-            "n": (frozenset({2}), 12),
-            "w": (frozenset({2}), 13),
-        },
-        "ne": {
-            "n": (frozenset({3}), 12),
-            "e": (frozenset({3, 2}), 11),
-        },
-        "sw": {
-            "w": (frozenset({4}), 13),
-        },
-        "se": {
-            "e": (frozenset({5}), 11),
-        },
-    }
-    if not isinstance(user, dict):
-        return defaults
-
-    def _parse_rule(v: object) -> tuple[frozenset[int], int] | None:
-        if not isinstance(v, dict):
-            return None
-        fr = v.get("from")
-        to_v = v.get("to")
-        if to_v is None:
-            return None
-        if isinstance(fr, (list, tuple)):
-            fs = frozenset(int(x) for x in fr)
-        else:
-            fs = frozenset({int(fr)})
-        return (fs, int(to_v))
-
-    merged = {k: dict(v) for k, v in defaults.items()}
-    for inset_key, dirs in user.items():
-        if inset_key not in merged or not isinstance(dirs, dict):
-            continue
-        for d, rule in dirs.items():
-            if d not in ("n", "e", "s", "w"):
-                continue
-            pr = _parse_rule(rule)
-            if pr is not None:
-                merged[inset_key][d] = pr
-    return merged
-
-
-def _base_rim_continuation_table(_south_to_9: int, south_to_6: int) -> dict[str, dict[str, dict[str, int]]]:
-    """Default grass vs rim tile ids per inset and cardinal (one step past the rim cell).
-
-    ``grass`` / ``rim`` are equal per direction so the same art tile is used whether continuation
-    is G/. or I (sheet-specific). NE south rim still uses ``south_to_6`` for both.
-
-    ``_south_to_9`` is unused in defaults (SW uses tile 3); override ``sw.s`` via ``rim_continuation``
-    or ``south_to_9`` + merge if you need a different south rim id.
-    """
-    return {
-        "sw": {"w": {"grass": 3, "rim": 3}, "s": {"grass": 3, "rim": 3}},
-        "se": {"e": {"grass": 2, "rim": 2}, "s": {"grass": 2, "rim": 2}},
-        "ne": {
-            "n": {"grass": 4, "rim": 4},
-            "e": {"grass": 4, "rim": 4},
-            "s": {"grass": south_to_6, "rim": south_to_6},
-        },
-        "nw": {"n": {"grass": 5, "rim": 5}, "w": {"grass": 5, "rim": 5}},
-    }
-
-
-def _merge_rim_continuation_overrides(
-    base: dict[str, dict[str, dict[str, int]]],
-    user: dict[str, object] | None,
-) -> dict[str, dict[str, dict[str, int]]]:
-    """Merge optional ``rim_continuation`` from config (per inset, per direction, grass/rim ints)."""
-    out = {ik: {d: dict(v) for d, v in dirs.items()} for ik, dirs in base.items()}
-    if not isinstance(user, dict):
-        return out
-    for ik, dirs in user.items():
-        if ik not in out or not isinstance(dirs, dict):
-            continue
-        for dname, pair in dirs.items():
-            if dname not in ("n", "e", "s", "w") or not isinstance(pair, dict):
-                continue
-            g = pair.get("grass")
-            r = pair.get("rim")
-            if g is not None:
-                out[ik][dname]["grass"] = int(g)
-            if r is not None:
-                out[ik][dname]["rim"] = int(r)
-    return out
-
-
-def _base_rim_second_pass_table(sw_w_grass: int) -> dict[str, dict[str, dict[str, int]]]:
-    """Default second-pass rim tile ids (1-based hills.aseprite indices).
-
-    SW W ``grass`` defaults to tile 2 (TL outer corner): open land west of the W rim uses that cap.
-    Override via ``sw_w_grass_second_pass`` / ``rim_second_pass`` / ``hill.cardinal_edges.w``.
-    """
-    return {
-        "nw": {"n": {"grass": 2, "hill": 9}, "w": {"grass": 2, "hill": 6}},
-        "ne": {"n": {"grass": 3, "hill": 9}, "e": {"grass": 3, "hill": 6}},
-        "se": {"s": {"grass": 5, "hill": 7}, "e": {"grass": 5, "hill": 8}},
-        "sw": {"w": {"grass": sw_w_grass, "hill": 8}, "s": {"grass": 4, "hill": 9}},
-    }
-
-
-def _merge_rim_second_pass_overrides(
-    base: dict[str, dict[str, dict[str, int]]],
-    user: dict[str, object] | None,
-) -> dict[str, dict[str, dict[str, int]]]:
-    """Merge optional ``rim_second_pass`` from config (per inset, per direction, grass/hill ints)."""
-    out = {ik: {d: dict(v) for d, v in dirs.items()} for ik, dirs in base.items()}
-    if not isinstance(user, dict):
-        return out
-    for ik, dirs in user.items():
-        if ik not in out or not isinstance(dirs, dict):
-            continue
-        for dname, pair in dirs.items():
-            if dname not in ("n", "e", "s", "w") or not isinstance(pair, dict):
-                continue
-            g = pair.get("grass")
-            h = pair.get("hill")
-            if g is not None:
-                out[ik][dname]["grass"] = int(g)
-            if h is not None:
-                out[ik][dname]["hill"] = int(h)
-    return out
-
-
-def _continuation_step(px: int, py: int, outward: str) -> tuple[int, int]:
-    """One cell from (px,py) in cardinal ``outward`` (n/e/s/w)."""
-    if outward == "n":
-        return px, py - 1
-    if outward == "s":
-        return px, py + 1
-    if outward == "w":
-        return px - 1, py
-    return px + 1, py
-
-
-def _pick_rim_tile_continuation(
-    px: int,
-    py: int,
-    outward: str,
-    grass_id: int,
-    rim_id: int,
-    width: int,
-    height: int,
-    is_hill_ascii: object,
-) -> int:
-    """Pick cap (grass_id) vs connecting rim (rim_id) from one step past the rim cell.
-
-    Uses **ASCII** terrain: ``rim_id`` when the continuation cell is hill (``I``), including
-    plateau ``I`` with no cliff tile—so rims connect through plateau cells. ``grass_id`` only
-    when the continuation is literal grass (``G`` / ``.``). OOB → ``rim_id`` (cliff to map edge).
-
-    (Older logic used ``hill_rim_cliff`` on the continuation, which treated plateau ``I`` like
-    grass and produced outer-corner caps everywhere the ridge met interior hill.)
-    """
-    nx, ny = _continuation_step(px, py, outward)
-    if not (0 <= nx < width and 0 <= ny < height):
-        return rim_id
-    return rim_id if is_hill_ascii(nx, ny) else grass_id
-
-
-def apply_hill_diagonal_inset_neighbor_rules(
-    ascii_lines: list[str],
-    ridge_tile_ids: list[list[int | None]],
-    width: int,
-    height: int,
-    *,
-    hill_char: str = "I",
-    corner_tiles: dict[str, int] | None = None,
-    south_to_9: int = 9,
-    south_to_6: int = 6,
-    use_tile_id_rules: bool = False,
-    adjacent_corner_to_edge: dict[str, object] | None = None,
-    rim_overrides: dict[str, dict[str, int]] | None = None,
-    rim_continuation: dict[str, object] | None = None,
-    sw_w_grass_second_pass: int = 2,
-    rim_second_pass: dict[str, object] | None = None,
-    skip_rim_on_raw_peninsula_tips: bool = True,
-) -> tuple[list[list[int | None]], list[list[int | None]], frozenset[tuple[int, int]]]:
-    """After ridge refinement: concave corner insets on *grass* (G/.) cells.
-
-    Returns ``(ridge_tile_ids_out, grass_inset_ids, diagonal_inset_rim_coords)``. The frozenset
-    lists hill cells that must not be overwritten by :func:`apply_hill_vertical_spine_tile_fix`:
-    rim tile overrides **and** peninsula-tip skip coordinates (no override written, but
-    adjacent_corner_to_edge was skipped so spine fix should skip too).
-
-    Uses an immutable snapshot of *ridge_tile_ids* for rim tile overrides.
-
-    **Geometry** (default): concave = exactly two orthogonal **rim** hill neighbors (resolved
-    ridge tile id not ``None`` — excludes deep plateau ``I`` that paint as grass only), the
-    opposite two cardinals are not ``I``, and the **diagonal behind the corner** is hill
-    (the 2×2 block has hill on three cells meeting at that diagonal — excludes wide notches).
-
-    The notch center may be ``G``, ``.``, ``T``, or ``F`` (forest counts as open ground for
-    detection; checkerboard diagonals treat ``T``/``F`` like grass gaps).
-
-    - SW: W + S rim; not N, not E; diagonal SW (x-1,y+1) is hill (L-shape) **or** grass
-      (checkerboard TL/BR hill, TR/BL grass) → ``sw``; rim tiles W/S.
-    - SE: E + S rim; not N, not W; diagonal SE (x+1,y+1) is hill (L-shape) **or** grass
-      (checkerboard) → ``se``; rim tiles E/S.
-    - NE: N + E rim; not W, not S; diagonal NE (x+1,y-1) is hill (L-shape) **or** grass
-      (checkerboard TL/BR hill, TR/BL grass) → ``ne``; rim tiles N/E (and S if ``sh_rim``).
-    - NW: N + W rim; not E, not S; diagonal NW (x-1,y-1) is hill (L-shape) **or** grass
-      (checkerboard) → ``nw``; rim tiles N/W.
-
-    Optional **tile-id** refinement (``use_tile_id_rules``): require legacy neighbor tile pairs
-    (W/S 4/2, etc.). Rarely matches after ridge refinement; leave False for visible insets.
-
-    After placing an inset, **adjacent outer-corner hill tiles** (default: 2×2 corners 2–5) that
-    touch the grass notch are rewritten to cardinal edge tiles (N/E/S/W) so they align with
-    inset art. Override via ``adjacent_corner_to_edge`` (see ``terrain.bitmask.json``).
-
-    **Rim tile ids** use **continuation**: one step past each rim cell in the same cardinal; if
-    that cell is **hill** (``I``) use the **rim** (connecting) tile id; if it is **grass**
-    (``G`` / ``.``) use the **grass** (outer-corner cap) id. Plateau ``I`` (no cliff in snapshot)
-    still counts as hill so ridges connect. OOB uses the **rim** tile.
-
-    Defaults are built from ``_base_rim_continuation_table`` (SW 3/3, SE 2/2, NE N/E 4/4 and
-    south ``south_to_6``, NW 5/5). Optional ``rim_continuation`` merges per-direction
-    ``grass``/``rim`` overrides. Optional flat ``rim_overrides`` (int per direction) forces that
-    tile for the whole inset direction.
-
-    A **second pass** then overwrites rim tiles from the first pass using one cell **past** each
-    rim tile along that cardinal: preceding N/W or succeeding S/E from ASCII (open land vs ``I``;
-    OOB → hill). Tile ids default per inset/direction; **SW W grass** defaults to tile **2** (TL
-    outer corner). Optional ``rim_second_pass`` / ``sw_w_grass_second_pass`` / ``hill.cardinal_edges.w``
-    override. **NW/NE/SE** second-pass assignments run **before** **SW S** so a cell that is both
-    another inset's rim and **SW S** rim keeps the **SW** south rule (e.g. 9 when hill past S), not
-    NW/NE rim ids such as **6**.     For **SW** only, **S** refinements run before **W**, so two SW
-    insets sharing a hill cell still use the **W** rule there.
-    When the SW south rim would use the **hill** continuation (default vertical **9**) but
-    :func:`_sw_inset_turn_east_from_grass_notch` is true, ``south_to_6`` is used instead so the
-    cliff turns east to meet bulk at ``(x+2, y-1)``.
-    Flat ``rim_overrides`` still skip this pass.
-
-    If two insets assign the same coordinate, **last writer wins** (scan order ``y`` then ``x``).
-
-    First match wins in order SW, SE, NE, NW.
-
-    When ``skip_rim_on_raw_peninsula_tips`` is True (default), a **narrow** set of
-    (inset key, rim direction, raw hill mask) triples skips rim overrides so tee / peninsula art
-    is not replaced (e.g. **SW** west rim, **SE** east rim, or **NE** north rim on raw mask **1**).
-    See ``_DIAGONAL_INSET_SKIP_RIM_PENINSULA_TIP_TRIPLES``. Disable via
-    ``terrain.bitmask.json`` hill ``diagonal_inset_skip_rim_on_peninsula_tips``: false.
-    """
-    ct = corner_tiles or {}
-    sw_t = int(ct.get("sw", 36))
-    se_t = int(ct.get("se", 37))
-    ne_t = int(ct.get("ne", 35))
-    nw_t = int(ct.get("nw", 34))
-
-    snap = [list(row) for row in ridge_tile_ids]
-    out = [list(row) for row in ridge_tile_ids]
-    grass_inset: list[list[int | None]] = [[None] * width for _ in range(height)]
-    edge_rules = _merge_diagonal_inset_adjacent_corner_to_edge(
-        adjacent_corner_to_edge if isinstance(adjacent_corner_to_edge, dict) else None
-    )
-    rim_table = _merge_rim_continuation_overrides(
-        _base_rim_continuation_table(south_to_9, south_to_6),
-        rim_continuation if isinstance(rim_continuation, dict) else None,
-    )
-    rsp = _merge_rim_second_pass_overrides(
-        _base_rim_second_pass_table(sw_w_grass_second_pass),
-        rim_second_pass if isinstance(rim_second_pass, dict) else None,
-    )
-    # Rim hill tiles: applied after edge rules; edge rules skip these coordinates.
-    rim_tile_override: dict[tuple[int, int], int] = {}
-    # Hill cells where we intentionally did not apply a rim override (peninsula-tip guard): must
-    # stay out of adjacent_corner_to_edge so snapshot tee/tip art is preserved.
-    rim_peninsula_skip_coords: set[tuple[int, int]] = set()
-
-    def _rsp_id(ik: str, d: str, br: str) -> int:
-        return rsp[ik][d]["grass" if br == "grass" else "hill"]
-
-    def _apply_adjacent_corner_edges(inset_key: str, gx: int, gy: int, *, protected: set[tuple[int, int]]) -> None:
-        rules = edge_rules.get(inset_key)
-        if not rules:
-            return
-        for direction, (from_ids, to_id) in rules.items():
-            px, py = gx, gy
-            if direction == "n":
-                py = gy - 1
-            elif direction == "s":
-                py = gy + 1
-            elif direction == "w":
-                px = gx - 1
-            else:
-                px = gx + 1
-            if not (0 <= px < width and 0 <= py < height):
-                continue
-            if (px, py) in protected:
-                continue
-            # Vertical spine: raw N+S, or autotile mask 5 after excl (e.g. N+E+S with E interior → 5).
-            raw_card = get_hill_adjacency_bitmask(
-                ascii_lines, px, py, hill_char=hill_char, exclude_interior_hill_neighbors=False
-            )
-            if raw_card == 5 or compute_hill_autotile_mask(ascii_lines, px, py, hill_char=hill_char) == 5:
-                continue
-            cur = out[py][px]
-            if cur is not None and cur in from_ids:
-                out[py][px] = to_id
-
-    def is_hill(px: int, py: int) -> bool:
-        if not (0 <= px < width and 0 <= py < height):
-            return False
-        row = ascii_lines[py]
-        return (row[px] if px < len(row) else ".") == hill_char
-
-    def is_grass_cell(px: int, py: int) -> bool:
-        if not (0 <= px < width and 0 <= py < height):
-            return False
-        row = ascii_lines[py]
-        c = row[px] if px < len(row) else "."
-        return c in ("G", ".")
-
-    def is_inset_grass_like_cell(px: int, py: int) -> bool:
-        """Concave notch may sit on G/. or forest T/F (treat like open ground for inset + checkerboard)."""
-        if not (0 <= px < width and 0 <= py < height):
-            return False
-        row = ascii_lines[py]
-        c = row[px] if px < len(row) else "."
-        return c in ("G", ".", "T", "F")
-
-    def hill_tid(px: int, py: int) -> int | None:
-        if not is_hill(px, py):
-            return None
-        return snap[py][px]
-
-    def hill_rim_cliff(px: int, py: int) -> bool:
-        """True if ASCII is hill and we draw a cliff tile (not deep-interior plateau: snap is None)."""
-        if not is_hill(px, py):
-            return False
-        return snap[py][px] is not None
-
-    def _flat_rim_override(inset_key: str, direction: str) -> int | None:
-        if not rim_overrides:
-            return None
-        sub = rim_overrides.get(inset_key)
-        if not isinstance(sub, dict):
-            return None
-        v = sub.get(direction)
-        return int(v) if v is not None else None
-
-    def _should_skip_rim_for_peninsula_tip(
-        px: int, py: int, inset_key: str, direction: str
-    ) -> bool:
-        if not skip_rim_on_raw_peninsula_tips or not is_hill(px, py):
-            return False
-        rm = get_hill_adjacency_bitmask(
-            ascii_lines, px, py, hill_char=hill_char, exclude_interior_hill_neighbors=False
-        )
-        return (inset_key, direction, rm) in _DIAGONAL_INSET_SKIP_RIM_PENINSULA_TIP_TRIPLES
-
-    def _assign_rim(px: int, py: int, outward: str, inset_key: str, direction: str) -> None:
-        if _should_skip_rim_for_peninsula_tip(px, py, inset_key, direction):
-            rim_peninsula_skip_coords.add((px, py))
-            return
-        fo = _flat_rim_override(inset_key, direction)
-        if fo is not None:
-            rim_tile_override[(px, py)] = fo
-            return
-        t = rim_table.get(inset_key, {}).get(direction)
-        if not t:
-            return
-        rim_tile_override[(px, py)] = _pick_rim_tile_continuation(
-            px,
-            py,
-            outward,
-            int(t["grass"]),
-            int(t["rim"]),
-            width,
-            height,
-            is_hill,
-        )
-
-    for y in range(height):
-        for x in range(width):
-            if is_hill(x, y) or not is_inset_grass_like_cell(x, y):
-                continue
-            nh = is_hill(x, y - 1)
-            sh = is_hill(x, y + 1)
-            wh = is_hill(x - 1, y)
-            eh = is_hill(x + 1, y)
-            nh_rim = hill_rim_cliff(x, y - 1)
-            sh_rim = hill_rim_cliff(x, y + 1)
-            wh_rim = hill_rim_cliff(x - 1, y)
-            eh_rim = hill_rim_cliff(x + 1, y)
-            nw_diag_hill = is_hill(x - 1, y - 1)
-            ne_diag_hill = is_hill(x + 1, y - 1)
-            sw_diag_hill = is_hill(x - 1, y + 1)
-            se_diag_hill = is_hill(x + 1, y + 1)
-            # SW (L-shape): W+S rim; diagonal SW (x-1,y+1) is hill — plateau behind the notch
-            if (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and wh_rim
-                and sh_rim
-                and not nh
-                and not eh
-                and sw_diag_hill
-            ):
-                if use_tile_id_rules and not (
-                    hill_tid(x - 1, y) == 4 and hill_tid(x, y + 1) == 2
-                ):
-                    continue
-                grass_inset[y][x] = sw_t
-                _assign_rim(x - 1, y, "w", "sw", "w")
-                _assign_rim(x, y + 1, "s", "sw", "s")
-            # SW (checkerboard): W+S rim; SW diagonal grass — TL/BR hill, TR/BL grass in the 2×2
-            elif (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and wh_rim
-                and sh_rim
-                and not nh
-                and not eh
-                and is_inset_grass_like_cell(x - 1, y + 1)
-            ):
-                if use_tile_id_rules:
-                    continue
-                grass_inset[y][x] = sw_t
-                _assign_rim(x - 1, y, "w", "sw", "w")
-                _assign_rim(x, y + 1, "s", "sw", "s")
-            # SE
-            elif (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and eh_rim
-                and sh_rim
-                and not nh
-                and not wh
-                and se_diag_hill
-            ):
-                if use_tile_id_rules and not (
-                    hill_tid(x + 1, y) == 4 and hill_tid(x, y + 1) == 3
-                ):
-                    continue
-                grass_inset[y][x] = se_t
-                _assign_rim(x + 1, y, "e", "se", "e")
-                _assign_rim(x, y + 1, "s", "se", "s")
-            # SE (checkerboard): E+S rim; SE diagonal grass — TL/BR hill, TR/BL grass in the 2×2
-            elif (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and eh_rim
-                and sh_rim
-                and not nh
-                and not wh
-                and is_inset_grass_like_cell(x + 1, y + 1)
-            ):
-                if use_tile_id_rules:
-                    continue
-                grass_inset[y][x] = se_t
-                _assign_rim(x + 1, y, "e", "se", "e")
-                _assign_rim(x, y + 1, "s", "se", "s")
-            # NE (L-shape): N+E rim; diagonal NE (TR) is hill — plateau behind the notch
-            elif (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and nh_rim
-                and eh_rim
-                and not wh
-                and not sh
-                and ne_diag_hill
-            ):
-                if use_tile_id_rules and not (
-                    hill_tid(x, y - 1) == 3 and hill_tid(x + 1, y) == 2
-                ):
-                    continue
-                grass_inset[y][x] = ne_t
-                _assign_rim(x, y - 1, "n", "ne", "n")
-                _assign_rim(x + 1, y, "e", "ne", "e")
-                if sh_rim:
-                    _assign_rim(x, y + 1, "s", "ne", "s")
-            # NE (checkerboard): N+E rim; NE diagonal (TR) grass — TL/BR hill, TR/BL grass in the 2×2
-            elif (
-                not DIAGONAL_INSET_GEOMETRY_NW_ONLY
-                and nh_rim
-                and eh_rim
-                and not wh
-                and not sh
-                and is_inset_grass_like_cell(x + 1, y - 1)
-            ):
-                if use_tile_id_rules:
-                    continue
-                grass_inset[y][x] = ne_t
-                _assign_rim(x, y - 1, "n", "ne", "n")
-                _assign_rim(x + 1, y, "e", "ne", "e")
-                if sh_rim:
-                    _assign_rim(x, y + 1, "s", "ne", "s")
-            # NW
-            elif nh_rim and wh_rim and not eh and not sh and nw_diag_hill:
-                if use_tile_id_rules and not (
-                    hill_tid(x, y - 1) == 2 and hill_tid(x - 1, y) == 2
-                ):
-                    continue
-                grass_inset[y][x] = nw_t
-                _assign_rim(x, y - 1, "n", "nw", "n")
-                _assign_rim(x - 1, y, "w", "nw", "w")
-            # NW (checkerboard): N+W rim; NW diagonal grass — TL/BR hill, TR/BL grass in the 2×2
-            elif nh_rim and wh_rim and not eh and not sh and is_inset_grass_like_cell(x - 1, y - 1):
-                if use_tile_id_rules:
-                    continue
-                grass_inset[y][x] = nw_t
-                _assign_rim(x, y - 1, "n", "nw", "n")
-                _assign_rim(x - 1, y, "w", "nw", "w")
-
-    # Second-pass rim refs: any non-hill land (incl. T/F/P, POI on grass/path) — not cliff (I).
-    # SW inset at (x,y): W rim (x-1,y); preceding-W sample is (x-2,y) (two west of inset = one west of rim).
-    _RIM_REFINE_GRASS_LIKE = frozenset("G.TFP.") | POI_CHARS
-
-    def _grass_or_hill_at(qx: int, qy: int) -> str:
-        """``grass`` for open terrain (G/., T/F/P, POI); ``hill`` for I or OOB."""
-        if not (0 <= qx < width and 0 <= qy < height):
-            return "hill"
-        row = ascii_lines[qy]
-        pad = row.ljust(width, ".")
-        c = pad[qx] if qx < len(pad) else "."
-        if c in _RIM_REFINE_GRASS_LIKE:
-            return "grass"
-        return "hill"
-
-    def _n_rim_column_has_hill_north(px: int, start_cy: int) -> bool:
-        """North scan for NW/NE N-rim: treat ASCII hill or existing hill tile id as bulk."""
-        if start_cy < 0:
-            return True
-        cy = start_cy
-        while cy >= 0:
-            # Resolved hill tile on an actual ASCII hill cell counts as bulk (not grass with stray snap).
-            if 0 <= px < width and is_hill(px, cy) and snap[cy][px] is not None:
-                return True
-            row = ascii_lines[cy] if cy < len(ascii_lines) else ""
-            pad = row.ljust(width, ".")
-            c = pad[px] if px < len(pad) else "."
-            if c == hill_char:
-                return True
-            if c in WATER_CHARS:
-                return False
-            cy -= 1
-        return False
-
-    def _refine_rim_second_pass_preceding_succeeding() -> None:
-        """Override rim tiles using one cell past each rim tile (preceding N/W or succeeding S/E)."""
-        for y in range(height):
-            for x in range(width):
-                gid = grass_inset[y][x]
-                if gid is None:
-                    continue
-                if gid == nw_t:
-                    # N rim (x, y-1): scan north for ``I`` (trees / soft land do not hide bulk).
-                    if _flat_rim_override("nw", "n") is None:
-                        px, py = x, y - 1
-                        if _should_skip_rim_for_peninsula_tip(px, py, "nw", "n"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            if _n_rim_column_has_hill_north(px, py - 1):
-                                br = "hill"
-                            else:
-                                br = _grass_or_hill_at(px, py - 1)
-                            rim_tile_override[(px, py)] = _rsp_id("nw", "n", br)
-                    # W rim (x-1, y): preceding W = (x-2, y)
-                    if _flat_rim_override("nw", "w") is None:
-                        px, py = x - 1, y
-                        if _should_skip_rim_for_peninsula_tip(px, py, "nw", "w"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            br = _grass_or_hill_at(px - 1, py)
-                            rim_tile_override[(px, py)] = _rsp_id("nw", "w", br)
-                elif not DIAGONAL_INSET_GEOMETRY_NW_ONLY and gid == ne_t:
-                    # N rim (x, y-1): same north scan as NW (past trees to plateau ``I``).
-                    if _flat_rim_override("ne", "n") is None:
-                        px, py = x, y - 1
-                        if _should_skip_rim_for_peninsula_tip(px, py, "ne", "n"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            if _n_rim_column_has_hill_north(px, py - 1):
-                                br = "hill"
-                            else:
-                                br = _grass_or_hill_at(px, py - 1)
-                            rim_tile_override[(px, py)] = _rsp_id("ne", "n", br)
-                    # E rim (x+1, y): succeeding E = (x+2, y)
-                    if _flat_rim_override("ne", "e") is None:
-                        px, py = x + 1, y
-                        if _should_skip_rim_for_peninsula_tip(px, py, "ne", "e"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            br = _grass_or_hill_at(px + 1, py)
-                            rim_tile_override[(px, py)] = _rsp_id("ne", "e", br)
-                elif not DIAGONAL_INSET_GEOMETRY_NW_ONLY and gid == se_t:
-                    # S rim (x, y+1): succeeding S = (x, y+2)
-                    if _flat_rim_override("se", "s") is None:
-                        px, py = x, y + 1
-                        if _should_skip_rim_for_peninsula_tip(px, py, "se", "s"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            br = _grass_or_hill_at(px, py + 1)
-                            rim_tile_override[(px, py)] = _rsp_id("se", "s", br)
-                    # E rim (x+1, y): succeeding E = (x+2, y)
-                    if _flat_rim_override("se", "e") is None:
-                        px, py = x + 1, y
-                        if _should_skip_rim_for_peninsula_tip(px, py, "se", "e"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            br = _grass_or_hill_at(px + 1, py)
-                            rim_tile_override[(px, py)] = _rsp_id("se", "e", br)
-
-        # SW S rim after NW/NE/SE so shared hill cells keep SW south art (e.g. 9) over NW/NE ids (e.g. 6).
-        if not DIAGONAL_INSET_GEOMETRY_NW_ONLY:
-            for y in range(height):
-                for x in range(width):
-                    gid = grass_inset[y][x]
-                    if gid is None or gid != sw_t:
-                        continue
-                    if _flat_rim_override("sw", "s") is None:
-                        px, py = x, y + 1
-                        if _should_skip_rim_for_peninsula_tip(px, py, "sw", "s"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            # This cell is SW **S** rim for inset at ``(x,y)`` and is often also NW **N** rim
-                            # for inset at ``(x,y+2)``. SW S second pass used to run after NW N and could
-                            # overwrite NW **9** (or cap **2**) with SW south-continuation **4** whenever
-                            # ``_inset_n_rim_column_has_hill_north`` was false — e.g. ASCII **G** at ``(x,y)``
-                            # (no ``I`` in column) even when the NW facet should own the tile. When the
-                            # cell south of this rim is an NW-tagged notch, **only** NW rim rules apply here.
-                            if 0 <= py + 1 < height and grass_inset[py + 1][px] == nw_t:
-                                continue
-                            br = _grass_or_hill_at(px, py + 1)
-                            if (
-                                br == "hill"
-                                and _sw_inset_turn_east_from_grass_notch(
-                                    ascii_lines, x, y, width, height, hill_char=hill_char
-                                )
-                            ):
-                                rim_tile_override[(px, py)] = south_to_6
-                            else:
-                                rim_tile_override[(px, py)] = _rsp_id("sw", "s", br)
-
-            for y in range(height):
-                for x in range(width):
-                    gid = grass_inset[y][x]
-                    if gid is None or gid != sw_t:
-                        continue
-                    if _flat_rim_override("sw", "w") is None:
-                        px, py = x - 1, y
-                        if _should_skip_rim_for_peninsula_tip(px, py, "sw", "w"):
-                            rim_peninsula_skip_coords.add((px, py))
-                        else:
-                            br = _grass_or_hill_at(px - 1, py)
-                            rim_tile_override[(px, py)] = _rsp_id("sw", "w", br)
-
-    _refine_rim_second_pass_preceding_succeeding()
-
-    # NW hardening: if NW inset N rim stayed mask-3 tile 4 but there is resolved hill bulk
-    # directly above, force the N rim to hill continuation (9). This prevents lingering 4s
-    # when column probes fall through due non-ASCII hill substitutions.
-    for y in range(height):
-        for x in range(width):
-            if grass_inset[y][x] != nw_t:
-                continue
-            px, py = x, y - 1
-            if not (0 <= px < width and 0 <= py < height):
-                continue
-            if out[py][px] != 4:
-                continue
-            if py - 1 >= 0 and out[py - 1][px] is not None:
-                rim_tile_override[(px, py)] = _rsp_id("nw", "n", "hill")
-
-    rim_protected = set(rim_tile_override.keys()) | rim_peninsula_skip_coords
-    for y in range(height):
-        for x in range(width):
-            gid = grass_inset[y][x]
-            if gid is None:
-                continue
-            if not DIAGONAL_INSET_GEOMETRY_NW_ONLY and gid == sw_t:
-                _apply_adjacent_corner_edges("sw", x, y, protected=rim_protected)
-            elif not DIAGONAL_INSET_GEOMETRY_NW_ONLY and gid == se_t:
-                _apply_adjacent_corner_edges("se", x, y, protected=rim_protected)
-            elif not DIAGONAL_INSET_GEOMETRY_NW_ONLY and gid == ne_t:
-                _apply_adjacent_corner_edges("ne", x, y, protected=rim_protected)
-            elif gid == nw_t:
-                _apply_adjacent_corner_edges("nw", x, y, protected=rim_protected)
-
-    for (rx, ry), rtid in rim_tile_override.items():
-        out[ry][rx] = rtid
-
-    return out, grass_inset, frozenset(rim_protected)
-
 
 def apply_hill_vertical_spine_tile_fix(
     ascii_lines: list[str],
@@ -3420,15 +2756,10 @@ def apply_hill_vertical_spine_tile_fix(
 ) -> None:
     """Fix wrong E peninsula (11) on vertical spine; keep left (9) vs right (7) cliffs.
 
-    If used together with :func:`apply_hill_diagonal_inset_neighbor_rules`, run this **after** it and
-    pass inset rim coordinates in ``skip_coords`` so inset rim art is not overwritten.
-
     Uses ``resolve_hill_vertical_ridge_tile_id`` from N/S neighbor tile ids so we do not overwrite
     tile 7 with 9. Interior stripping can still yield mask 2 → tile 11 when both N and S are hill.
 
-    ``skip_coords``: hill cells that must not be rewritten (e.g. diagonal-inset rim overrides from
-    :func:`apply_hill_diagonal_inset_neighbor_rules`), so SW W grass cap (tile 2) is not replaced
-    by vertical ridge tile 9 when N+S are both hill.
+    ``skip_coords``: hill cells that must not be rewritten by this late spine fix.
     """
     ridge_default = hill_map.get(5, 9)
     e_only_tile = hill_map.get(2, 11)
@@ -3580,11 +2911,8 @@ def resolve_hill_autotile_tile_id(
     :func:`apply_hill_mask14_n_peninsula_connector_pass` runs **after** inset + spine fix and sets
     :func:`resolve_hill_mask14_n_peninsula_connector_tile_id` (default **21**) when E/W are
     ``mask14_ew_neighbor_tile`` (8) and S matches ``mask14_south_neighbor_tiles`` **or** S's raw
-    cardinal mask is in ``mask14_south_neighbor_raw_tip_masks`` (default **1, 2, 4, 8**).
-    After inset + spine fix, :func:`apply_hill_peninsula_post_inset_tile_restore_pass` may restore
-    tip tiles from a snapshot (``peninsula_post_inset_tile_restore``), skipping
-    :func:`apply_hill_diagonal_inset_neighbor_rules` rim coordinates so corridor snapshots do not
-    revert SW/SE south caps.
+    cardinal mask is in ``mask14_south_neighbor_raw_tip_masks`` (default **1, 2, 4, 8**). The active
+    painter then runs :func:`apply_hill_inset_2x2_pass` on the resolved hill grid.
 
     Pass ``cached_raw_mask`` / ``cached_autotile_mask`` from :func:`_precompute_hill_paint_mask_grids`
     to avoid duplicate bitmask work when painting.
@@ -3651,11 +2979,11 @@ def resolve_hill_paint_layer_tile_id(
     ``base_hill_tile_ids`` after optional post-passes; rim fallback uses ``autotile_mask`` with
     :func:`resolve_hill_autotile_tile_id` cache parameters.
     """
+    if base_hill_tile_ids is not None and base_hill_tile_ids[y][x] is not None:
+        return base_hill_tile_ids[y][x]
     if is_hill_deep_interior_cell(ascii_lines, x, y, hill_char=hill_char):
         return None
     if raw_cardinal_mask != HILL_INTERIOR_MASK:
-        if base_hill_tile_ids is not None and base_hill_tile_ids[y][x] is not None:
-            return base_hill_tile_ids[y][x]
         return resolve_hill_autotile_tile_id(
             ascii_lines,
             x,
@@ -3770,230 +3098,24 @@ def resolve_hill_mask15_protrusion_tile_id(
     return default_tile
 
 
-def get_hill_diagonal_inset_tile(
-    ascii_lines: list[str],
-    x: int,
-    y: int,
-    hill_char: str = "I",
-    *,
-    inset_tiles: dict[str, int] | None = None,
-) -> int | None:
-    """When (x,y) is a hill at a diagonal pair corner, return the inset tile ID.
-    Dark blue (NE-SW diagonal): fill NW and SE towards center -> tile 28 at NE hill, 38 at SW hill.
-    Light blue (NW-SE diagonal): fill NE and SW towards center -> tile 31 at NW hill, 36 at SE hill.
-    Returns 1-based tile ID or None if not in a diagonal pair."""
-    height = len(ascii_lines)
-    width = max(len(row) for row in ascii_lines) if ascii_lines else 0
-
-    def is_hill(px: int, py: int) -> bool:
-        if py < 0 or py >= height or px < 0 or px >= width:
-            return False
-        row = ascii_lines[py]
-        ch = row[px] if px < len(row) else "."
-        return ch == hill_char
-
-    def is_grass(px: int, py: int) -> bool:
-        if py < 0 or py >= height or px < 0 or px >= width:
-            return True
-        row = ascii_lines[py]
-        ch = row[px] if px < len(row) else "."
-        return ch != hill_char
-
-    insets = inset_tiles or {"nw": 28, "ne": 31, "sw": 36, "se": 38}
-
-    # (x,y) is NE of a 2x2 block: block corners (x-1,y), (x,y), (x-1,y+1), (x,y+1)
-    # Dark blue: hills at NE and SW -> (x,y) and (x-1,y+1). Gaps at NW and SE.
-    if is_hill(x, y) and is_hill(x - 1, y + 1) and is_grass(x - 1, y) and is_grass(x, y + 1):
-        return insets["nw"]  # NE hill borders NW gap -> fill NW towards center
-
-    # (x,y) is SW of a 2x2 block: block corners (x-1,y-1), (x,y-1), (x-1,y), (x,y)
-    # Dark blue: hills at NE=(x,y-1) and SW=(x-1,y). Gaps at NW and SE.
-    if is_hill(x - 1, y) and is_hill(x, y - 1) and is_grass(x - 1, y - 1) and is_grass(x, y):
-        return None  # (x,y) is SE gap, not a hill
-    # (x,y) is SW: block (x,y-1), (x+1,y-1), (x,y), (x+1,y). NE=(x+1,y-1), SW=(x,y).
-    if is_hill(x, y) and is_hill(x + 1, y - 1) and is_grass(x, y - 1) and is_grass(x + 1, y):
-        return insets["se"]  # SW hill borders SE gap -> fill SE towards center
-
-    # (x,y) is NW of a 2x2 block: corners (x,y), (x+1,y), (x,y+1), (x+1,y+1)
-    # Light blue: hills at NW and SE. Gaps at NE and SW.
-    if is_hill(x, y) and is_hill(x + 1, y + 1) and is_grass(x + 1, y) and is_grass(x, y + 1):
-        return insets["ne"]  # NW hill borders NE gap -> fill NE towards center
-
-    # (x,y) is SE of a 2x2 block: corners (x-1,y-1), (x,y-1), (x-1,y), (x,y)
-    # Light blue: hills at NW=(x-1,y-1) and SE=(x,y).
-    if is_hill(x, y) and is_hill(x - 1, y - 1) and is_grass(x - 1, y) and is_grass(x, y - 1):
-        return insets["sw"]  # SE hill borders SW gap -> fill SW towards center
-
-    return None
-
-
-def get_hill_diagonal_bridge_tile(
-    ascii_lines: list[str],
-    x: int,
-    y: int,
-    hill_char: str = "I",
-    *,
-    bridge_tiles: dict[str, int] | None = None,
-) -> int | None:
-    """When (x,y) is a GRASS cell in a diagonal hill gap, return the 2x2 corner bridge tile
-    to connect the diagonal hills via NESW. Dark blue (NE-SW): center is NW -> tile 2 at NW gap,
-    tile 5 at SE gap. Light blue (NW-SE): tile 3 at NE gap, tile 4 at SW gap. Returns tile ID or None."""
-    height = len(ascii_lines)
-    width = max(len(row) for row in ascii_lines) if ascii_lines else 0
-
-    def is_hill(px: int, py: int) -> bool:
-        if py < 0 or py >= height or px < 0 or px >= width:
-            return False
-        row = ascii_lines[py]
-        ch = row[px] if px < len(row) else "."
-        return ch == hill_char
-
-    def is_grass(px: int, py: int) -> bool:
-        if py < 0 or py >= height or px < 0 or px >= width:
-            return True
-        row = ascii_lines[py]
-        ch = row[px] if px < len(row) else "."
-        return ch != hill_char
-
-    bridges = bridge_tiles or {"tl": 2, "tr": 3, "bl": 4, "br": 5}
-    if not is_grass(x, y):
-        return None
-
-    # (x,y) is NW gap: hills at NE and SW. Center of hill group is NW -> tile 2 (TL)
-    if is_hill(x + 1, y) and is_hill(x, y + 1) and is_grass(x + 1, y + 1):
-        return bridges["tl"]
-    # (x,y) is SE gap: hills at NW and SW (i.e. NE and SW of block). Fill SE -> tile 5 (BR)
-    if is_hill(x - 1, y) and is_hill(x, y - 1) and is_grass(x - 1, y - 1):
-        return bridges["br"]
-    # (x,y) is NE gap: hills at NW and SE. Fill NE -> tile 3 (TR)
-    if is_hill(x - 1, y) and is_hill(x, y + 1) and is_grass(x - 1, y + 1):
-        return bridges["tr"]
-    # (x,y) is SW gap: hills at NW and SE. Fill SW -> tile 4 (BL)
-    if is_hill(x, y - 1) and is_hill(x + 1, y) and is_grass(x + 1, y - 1):
-        return bridges["bl"]
-    return None
-
-
-def get_path_bitmask(
-    ascii_lines: list[str],
-    x: int,
-    y: int,
-    path_chars: frozenset[str] = PATH_CHARS,
-) -> int:
-    """Compute 4-bit path connectivity bitmask for cell (x,y).
-    Bits: N=1, E=2, S=4, W=8. Returns 0-15."""
-    height = len(ascii_lines)
-    width = max(len(row) for row in ascii_lines) if ascii_lines else 0
-
-    def is_path(px: int, py: int) -> bool:
-        if py < 0 or py >= height or px < 0 or px >= width:
-            return False
-        row = ascii_lines[py]
-        ch = row[px] if px < len(row) else "."
-        return ch in path_chars
-
-    mask = 0
-    if is_path(x, y - 1):
-        mask |= 1  # North
-    if is_path(x + 1, y):
-        mask |= 2  # East
-    if is_path(x, y + 1):
-        mask |= 4  # South
-    if is_path(x - 1, y):
-        mask |= 8  # West
-    return mask
-
-
-def load_water_tiles(
-    water_path: Path,
-    tile_size: int,
-) -> list[Any]:
-    """Load water tiles from PNG. If sheet has 2+ tiles (horizontal), returns [shallow, deep, ...].
-    Otherwise returns single-tile list (shallow only)."""
-    Image = _ensure_pillow()
-    img = Image.open(water_path)
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
-    w, h = img.size
-    cols = w // tile_size
-    rows = h // tile_size
-    if cols * rows >= 2:
-        tiles: list[Any] = []
-        for r in range(rows):
-            for c in range(cols):
-                x, y = c * tile_size, r * tile_size
-                if x + tile_size > w or y + tile_size > h:
-                    continue
-                tile = img.crop((x, y, x + tile_size, y + tile_size))
-                if tile.width != tile_size or tile.height != tile_size:
-                    tile = tile.resize(
-                        (tile_size, tile_size), Image.Resampling.NEAREST
-                    )
-                tiles.append(tile)
-        return tiles
-    if w != tile_size or h != tile_size:
-        img = img.resize((tile_size, tile_size), Image.Resampling.NEAREST)
-    return [img]
-
-
-def load_dirt_tiles(
-    dirt_path: Path,
-    tile_size: int,
-) -> list[Any]:
-    """Load dirt tiles from PNG. If image is a 4x4 sheet (64x64 for 16px tiles),
-    returns 16 tiles in row-major order (bitmask index 0-15). Otherwise returns
-    a single-tile list (replicated for fallback)."""
-    Image = _ensure_pillow()
-    img = Image.open(dirt_path)
-    if img.mode != "RGBA":
-        img = img.convert("RGBA")
-    w, h = img.size
-    cols = w // tile_size
-    rows = h // tile_size
-    if cols >= 4 and rows >= 4:
-        # Treat as 16-tile autotile sheet (4x4)
-        tiles: list[Any] = []
-        for r in range(4):
-            for c in range(4):
-                x, y = c * tile_size, r * tile_size
-                tile = img.crop((x, y, x + tile_size, y + tile_size))
-                if tile.width != tile_size or tile.height != tile_size:
-                    tile = tile.resize(
-                        (tile_size, tile_size), Image.Resampling.NEAREST
-                    )
-                tiles.append(tile)
-        return tiles
-    # Single tile
-    if w != tile_size or h != tile_size:
-        img = img.resize((tile_size, tile_size), Image.Resampling.NEAREST)
-    return [img]
-
 
 def export_treeset_to_png(
-    treeset_path: Path,
+    aseprite_path: Path,
     out_png: Path,
     aseprite_bin: Path,
     *,
     sheet_columns: int | None = None,
     out_json: Path | None = None,
 ) -> None:
-    """Export treeset .aseprite to PNG sheet via Aseprite CLI.
-    sheet_columns: use rows layout with this many columns to match tileset grid (e.g. 11 for grass).
-    out_json: optional path to export --data JSON for tile positions."""
-    cmd = [
-        str(aseprite_bin),
-        "-b",
-        str(treeset_path),
-        "--sheet",
-        str(out_png),
-        "--sheet-type",
-        "rows" if sheet_columns else "horizontal",
-    ]
-    if sheet_columns:
+    """Export an Aseprite tileset or sprite sheet to a PNG sheet."""
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [str(aseprite_bin), "-b", str(aseprite_path), "--sheet", str(out_png)]
+    if sheet_columns is not None:
         cmd.extend(["--sheet-columns", str(sheet_columns)])
-    if out_json:
-        cmd.extend(["--data", str(out_json)])
-    subprocess.run(cmd, check=True, capture_output=True)
+    if out_json is not None:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        cmd.extend(["--data", str(out_json), "--format", "json-array"])
+    subprocess.run(cmd, check=True)
 
 
 def paint_map_to_png(
@@ -4163,15 +3285,16 @@ def paint_map_to_png(
             river_range_override = (int(rr[0]), int(rr[1]))
     _hill = _to_int_map(cfg.get("hill_map") or (cfg.get("hill") or {}).get("hill_map"))
     hill_map = _hill if _hill else dict(HILL_MAP)
-    hill_bridge_tiles: dict[str, int] | None = None
     split_maps_by_shape: dict[str, dict[int, int]] | None = None
     split_enabled_masks: frozenset[int] = frozenset()
     split_default_shape = "default"
     _hill_cfg = cfg.get("hill") if isinstance(cfg.get("hill"), dict) else {}
+    hill_peninsula_connector_tiles = parse_hill_peninsula_connector_tile_ids(_hill_cfg)
+    hill_peninsula_path_tile_ids = parse_hill_peninsula_path_tile_ids(
+        _hill_cfg, hill_peninsula_connector_tiles
+    )
+    hill_inset_2x2_rules = parse_hill_inset_2x2_rules(_hill_cfg)
     if _hill_cfg:
-        bc = _hill_cfg.get("2x2_corners")
-        if isinstance(bc, dict):
-            hill_bridge_tiles = {k: int(v) for k, v in bc.items() if k in ("tl", "tr", "bl", "br")}
         raw_split = _hill_cfg.get("maps_by_shape")
         if isinstance(raw_split, dict):
             parsed_split: dict[str, dict[int, int]] = {}
@@ -4206,8 +3329,6 @@ def paint_map_to_png(
         raw_default_shape = _hill_cfg.get("split_mask_default_shape")
         if isinstance(raw_default_shape, str) and raw_default_shape.strip():
             split_default_shape = raw_default_shape.strip()
-    # When true, paste 2x2 corner tiles on ASCII grass to "bridge" diagonal hill gaps (can cover interior grass).
-    hill_diagonal_bridge = bool(_hill_cfg.get("diagonal_bridge", False))
     extended_masks = tuple(cfg.get("extended_shoreline_masks") or EXTENDED_SHORELINE_MASKS)
     river_masks = tuple(cfg.get("river_masks") or RIVER_MASKS)
     interior_corner_masks = tuple(cfg.get("interior_corner_masks") or INTERIOR_CORNER_MASKS)
@@ -4670,6 +3791,23 @@ def paint_map_to_png(
                         hill_char="I",
                     )
                     base_hill_tile_ids[hy][hx] = tid
+        apply_hill_peninsula_connector_pass(
+            ascii_lines,
+            base_hill_tile_ids,
+            width,
+            height,
+            hill_char="I",
+            tiles=hill_peninsula_connector_tiles,
+            path_tile_ids=hill_peninsula_path_tile_ids,
+        )
+        apply_hill_inset_2x2_pass(
+            ascii_lines,
+            base_hill_tile_ids,
+            width,
+            height,
+            rules=hill_inset_2x2_rules,
+            hill_char="I",
+        )
 
     for y, row in enumerate(ascii_lines):
         for x in range(width):
@@ -5620,17 +4758,26 @@ def paint_map_to_png(
                     raw_card = get_hill_adjacency_bitmask(
                         ascii_lines, x, y, hill_char="I", exclude_interior_hill_neighbors=False
                     )
+                autotile_mask = (
+                    hill_autotile_masks[y][x]
+                    if hill_autotile_masks is not None
+                    else compute_hill_autotile_mask(ascii_lines, x, y, hill_char="I")
+                )
+                if autotile_mask is None:
+                    autotile_mask = compute_hill_autotile_mask(ascii_lines, x, y, hill_char="I")
                 is_hill_interior = raw_card == HILL_INTERIOR_MASK
                 if grass_hill:
-                    tile_id = resolve_hill_basic_mask_paint_tile_id(
+                    tile_id = resolve_hill_paint_layer_tile_id(
                         ascii_lines,
                         x,
                         y,
                         raw_cardinal_mask=int(raw_card),
+                        autotile_mask=int(autotile_mask),
+                        base_hill_tile_ids=base_hill_tile_ids,
                         hill_map=hill_map,
-                        split_maps_by_shape=split_maps_by_shape,
-                        split_enabled_masks=split_enabled_masks,
-                        split_default_shape=split_default_shape,
+                        post_first_pass=False,
+                        width=width,
+                        height=height,
                         hill_char="I",
                     )
                     if tile_id is None:
@@ -5720,28 +4867,6 @@ def paint_map_to_png(
                     else:
                         if not cell_has_water:
                             _paste_visible(grass_layer, tile, fallback, color_tiles)
-                    # Diagonal bridge (opt-in): 2x2 corners on grass to connect hills diagonally; off by default
-                    # so interior grass matches ASCII without hill art on G/.
-                    if hill_diagonal_bridge:
-                        if (
-                            ch in ("G", ".")
-                            and not cell_has_water
-                            and hill_layer
-                            and grass_hill
-                            and shore_ch not in ("B", "L", "R")
-                        ):
-                            bridge_id = get_hill_diagonal_bridge_tile(
-                                ascii_lines, x, y, bridge_tiles=hill_bridge_tiles
-                            )
-                            if bridge_id is not None:
-                                hill_start = (grass_hill_range or (1, 37))[0]
-                                idx = bridge_id - hill_start
-                                if 0 <= idx < len(grass_hill):
-                                    bt = grass_hill[idx]
-                                    if bt and _is_tile_visible(bt):
-                                        _paste_visible(
-                                            hill_layer, bt, SOLID_TILE_COLORS["I"], color_tiles
-                                        )
             elif ch == "P" and grass_imgs:
                 tile, is_shore = _pick_grass_tile()
                 tile = _visible_grass_or_default(tile or _pick_interior_grass())

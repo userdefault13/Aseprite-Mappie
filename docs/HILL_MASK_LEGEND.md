@@ -42,6 +42,50 @@ Same bit order applies to **grass shoreline** (`GRASS_SHORELINE_MAP`) and **lake
 
 ---
 
+## Peninsula connector pass
+
+After the strict `hill_map` pass, the painter uses cardinal endpoint tiles `10–13` as anchors and rewrites the inward adjacent hill cell. The endpoint tile itself stays unchanged.
+
+| Anchor endpoint tile | Inward adjacent result |
+|---------------------:|------------------------|
+| 10 | both side hills → 16; left open/right hill → 39; left hill/right open → 41; both open → 24 |
+| 12 | both side hills → 21; left open/right hill → 43; left hill/right open → 45; both open → 24 |
+| 11 | both side hills → 18; top open/bottom hill → 40; top hill/bottom open → 44; both open → 23 |
+| 13 | both side hills → 19; top open/bottom hill → 38; top hill/bottom open → 42; both open → 23 |
+
+The same pass can classify adjacent peninsula-path neighbors into connector tiles:
+
+| Peninsula neighbor mask | Tile |
+|-------------------------|-----:|
+| E+S | 25 |
+| W+S | 27 |
+| E+N | 31 |
+| W+N | 33 |
+| W+N+E | 32 |
+| W+S+E | 26 |
+| S+E+N | 28 |
+| S+W+N | 30 |
+| N+E+S+W | 29 |
+
+These defaults are configurable through `hill.peninsula_connectors`; the loaded hill range must include tiles `1–45`.
+
+---
+
+## Hill inset 2x2 pass
+
+After peninsula connectors, the painter scans each resolved 2x2 hill grid block. One corner must be grass (`None` in the hill grid or a non-hill ASCII cell), the two visible hill edge cells must match configured tile-id sets, and the inner hill feature cell is rewritten to an inset corner tile.
+
+| Inset | 2x2 shape | Required edge tile sets | Output |
+|------|-----------|-------------------------|-------:|
+| NW | `TL=grass`, write `BR` | `TR in {39,2,9}` and `BL in {38,2,8}` | 34 |
+| NE | `TR=grass`, write `BL` | `TL in {41,3,7}` and `BR in {40,3,6}` | 35 |
+| SE | `BR=grass`, write `TL` | `TR in {44,5,8}` and `BL in {45,5,7}` | 37 |
+| SW | `BL=grass`, write `TR` | `TL in {42,4,8}` and `BR in {43,4,9}` | 36 |
+
+These defaults are configurable through `hill.inset_2x2_rules`; the pass writes directly to `base_hill_tile_ids`, so `resolve_hill_paint_layer_tile_id` paints tiles `34–37` without a separate grass inset overlay.
+
+---
+
 ## Five ways to handle “one mask, many possible tiles”
 
 When a single mask value could map to more than one correct piece of art, common approaches are:
