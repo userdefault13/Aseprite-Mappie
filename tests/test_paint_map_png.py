@@ -36,6 +36,7 @@ from tilemap_generator.paint_map_png import (
     resolve_hill_peninsula_connector_tile_id,
     apply_hill_peninsula_connector_pass,
     apply_hill_inset_2x2_pass,
+    apply_hill_four_way_connector_pass,
     parse_hill_inset_2x2_rules,
     hill_mask5_vertical_spine_open_diagonals_for_tile24,
 )
@@ -1380,3 +1381,91 @@ class HillInset2x2PassTests(unittest.TestCase):
             ),
             34,
         )
+
+
+class HillFourWayConnectorPassTests(unittest.TestCase):
+    def _base(self, center: int | None, n: int, e: int, s: int, w: int) -> list[list[int | None]]:
+        return [
+            [None, n, None],
+            [w, center, e],
+            [None, s, None],
+        ]
+
+    def test_case1_uses_tile_47(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 7, 6, 9, 8)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 47)
+        self.assertIn((1, 1), touched)
+
+    def test_case2_uses_tile_46(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 9, 8, 7, 6)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 46)
+        self.assertIn((1, 1), touched)
+
+    def test_all_peninsula_neighbors_use_tile_29(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 23, 24, 25, 26)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 29)
+        self.assertIn((1, 1), touched)
+
+    def test_case4_nw_peninsula_es_hill_uses_tile_15(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 23, 6, 9, 24)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 15)
+        self.assertIn((1, 1), touched)
+
+    def test_case5_ne_peninsula_sw_hill_uses_tile_17(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 23, 24, 9, 8)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 17)
+        self.assertIn((1, 1), touched)
+
+    def test_case6_sw_peninsula_ne_hill_uses_tile_20(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 9, 8, 23, 24)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 20)
+        self.assertIn((1, 1), touched)
+
+    def test_case6_normalizes_geometry_peninsula_neighbors(self) -> None:
+        lines = [
+            "..I..",
+            "..II.",
+            "IIIII",
+            "..I..",
+            ".....",
+        ]
+        base = [
+            [None, None, 9, None, None],
+            [None, None, 9, 8, None],
+            [8, 8, 37, 8, 8],
+            [None, None, 37, None, None],
+            [None, None, None, None, None],
+        ]
+        touched = apply_hill_four_way_connector_pass(lines, base, 5, 5)
+        self.assertEqual(base[2][2], 20)
+        self.assertEqual(base[2][1], 23)
+        self.assertEqual(base[3][2], 12)
+        self.assertIn((2, 2), touched)
+        self.assertIn((1, 2), touched)
+        self.assertIn((2, 3), touched)
+
+    def test_case7_es_peninsula_nw_hill_uses_tile_22(self) -> None:
+        lines = [".I.", "III", ".I."]
+        base = self._base(None, 9, 23, 24, 8)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertEqual(base[1][1], 22)
+        self.assertIn((1, 1), touched)
+
+    def test_non_news_center_is_not_rewritten(self) -> None:
+        lines = [".I.", ".II", ".I."]
+        base = self._base(None, 7, 6, 9, 8)
+        touched = apply_hill_four_way_connector_pass(lines, base, 3, 3)
+        self.assertIsNone(base[1][1])
+        self.assertNotIn((1, 1), touched)

@@ -82,8 +82,8 @@ def load_legend(path: Path) -> dict[str, int]:
     return legend
 
 
-def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
-    subprocess.run(cmd, check=True, env=env)
+def run(cmd: list[str], env: dict[str, str] | None = None, timeout: float | None = None) -> None:
+    subprocess.run(cmd, check=True, env=env, timeout=timeout)
 
 
 def command_check(args: argparse.Namespace) -> None:
@@ -544,6 +544,30 @@ def command_paint(args: argparse.Namespace) -> None:
                 seed=args.tree_seed,
                 strict=getattr(args, "strict", False),
             )
+            layer_export_dir = os.getenv("MAPPIE_LAYER_EXPORT_DIR")
+            if layer_export_dir:
+                layer_dir = Path(layer_export_dir)
+                layer_dir.mkdir(parents=True, exist_ok=True)
+                layer_paths = {
+                    "water.png": water_png,
+                    "water_shallow.png": water_shallow_png,
+                    "water_deep.png": water_deep_png,
+                    "water_lake.png": water_lake_png,
+                    "water_river.png": water_river_png,
+                    "grass.png": grass_png,
+                    "shoreline.png": shoreline_out,
+                    "lakebank.png": lakebank_out,
+                    "hill.png": hill_png,
+                    "dirt.png": dirt_png,
+                    "trees.png": trees_png,
+                    "poi.png": poi_png,
+                }
+                for layer_name, layer_path in layer_paths.items():
+                    if layer_path.exists():
+                        shutil.copy2(layer_path, layer_dir / layer_name)
+                for poi_name, poi_path in poi_layers_png.items():
+                    if poi_path.exists():
+                        shutil.copy2(poi_path, layer_dir / f"poi_{poi_name.lower()}.png")
             closed_lines = close_ocean_shoreline_gaps(lines)
             closed_lines = close_lake_shoreline_gaps(
                 closed_lines, water_chars=frozenset([WATER_CHAR])
@@ -594,7 +618,16 @@ def command_paint(args: argparse.Namespace) -> None:
             env["POI_CREEP_PNG"] = str(poi_layers_png["Creep"])
             env["POI_DEAD_END_PNG"] = str(poi_layers_png["DeadEnd"])
             env["POI_SECRET_PNG"] = str(poi_layers_png["Secret"])
-            run([str(aseprite_bin), "-b", "--script", str(lua_script)], env=env)
+            paint_timeout = float(os.getenv("MAPPIE_ASEPRITE_PAINT_TIMEOUT", "0") or 0) or None
+            try:
+                run([str(aseprite_bin), "-b", "--script", str(lua_script)], env=env, timeout=paint_timeout)
+            except subprocess.TimeoutExpired:
+                if not os.getenv("MAPPIE_ALLOW_ASEPRITE_PAINT_TIMEOUT") or not out_path.exists():
+                    raise
+                print(
+                    f"Warning: Aseprite paint command timed out after writing {out_path}; continuing.",
+                    file=sys.stderr,
+                )
     else:
         # No treeset: Lua paints solid colors only
         lua_script = PROJECT_ROOT / "assets/lua/paint_ascii_map.lua"

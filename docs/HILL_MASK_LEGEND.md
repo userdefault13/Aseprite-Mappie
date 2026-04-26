@@ -67,7 +67,7 @@ The same pass can classify adjacent peninsula-path neighbors into connector tile
 | S+W+N | 30 |
 | N+E+S+W | 29 |
 
-These defaults are configurable through `hill.peninsula_connectors`; the loaded hill range must include tiles `1–45`.
+These defaults are configurable through `hill.peninsula_connectors`; the loaded hill range must include tiles `1–47`.
 
 ---
 
@@ -83,6 +83,24 @@ After peninsula connectors, the painter scans each resolved 2x2 hill grid block.
 | SW | `BL=grass`, write `TR` | `TL in {42,4,8}` and `BR in {43,4,9}` | 36 |
 
 These defaults are configurable through `hill.inset_2x2_rules`; the pass writes directly to `base_hill_tile_ids`, so `resolve_hill_paint_layer_tile_id` paints tiles `34–37` without a separate grass inset overlay.
+
+---
+
+## Final 4-Way Hill Connectors
+
+After the inset pass, the painter checks raw mask `15` cells (`N+E+S+W` are all hill) against the resolved tile IDs and geometry of their four cardinal neighbors. Peninsula neighbors include configured `hill.peninsula_path_tile_ids`, raw cardinal tips, and straight extender geometry (`E+W` with open `N/S` -> `23`, `N+S` with open `E/W` -> `24`).
+
+| Neighbor tile IDs | Output |
+|-------------------|-------:|
+| `N=7`, `E=6`, `S=9`, `W=8` | 47 |
+| `N=9`, `E=8`, `S=7`, `W=6` | 46 |
+| `N/E/S/W` all in `hill.peninsula_path_tile_ids` | 29 |
+| `N/W` peninsula, `E/S` non-peninsula hill | 15 |
+| `N/E` peninsula, `S/W` non-peninsula hill | 17 |
+| `S/W` peninsula, `N/E` non-peninsula hill | 20 |
+| `E/S` peninsula, `N/W` non-peninsula hill | 22 |
+
+These defaults are configurable through `hill.four_way_connectors`.
 
 ---
 

@@ -62,7 +62,7 @@
   },
 
   "hill": {
-    "range": [1, 45],
+    "range": [1, 47],
     "sheet_columns": 6,
     "hill_map": {
       "_comment": "Cardinals 1,2,4,8 = peninsula ends N→12,E→11,S→10,W→13. Mask 15 = 4-way connector (tile 14); plateau interior is grass in painter, not this tile.",
@@ -139,6 +139,16 @@
       "tee_s_w_n": 30,
       "connector_4way": 29
     },
+    "four_way_connectors": {
+      "_comment": "Final raw mask-15 pass after insets. Match resolved N/E/S/W tile IDs: 7,6,9,8 -> 47; 9,8,7,6 -> 46; all four peninsula neighbors -> 29. Peninsula neighbors include peninsula_path_tile_ids, raw cardinal tips, and straight extender geometry (E+W open N/S -> 23, N+S open E/W -> 24). Mixed pen/hill quadrants use 15,17,20,22.",
+      "n7_e6_s9_w8": 47,
+      "n9_e8_s7_w6": 46,
+      "peninsula_4way": 29,
+      "n_pen_e_hill_s_hill_w_pen": 15,
+      "n_pen_e_pen_s_hill_w_hill": 17,
+      "n_hill_e_hill_s_pen_w_pen": 20,
+      "n_hill_e_pen_s_pen_w_hill": 22
+    },
     "peninsula_tee_side_cap_tile": 6,
     "peninsula_tee_both_sides": 16,
     "peninsula_tee_e_side": 15,
@@ -164,7 +174,7 @@
     "_corner_rules": "Mask 6 (E+S)→2; 12 (S+W)→3; three-open masks: 7→9, 11→8, 13→7, 14→6.",
     "_three_sides": "Masks 7/11/13/14 use resolve_hill_autotile_tile_id (not single cardinal strips).",
     "_sheet_art_notes": "Human-only: concave inset corners are NW 34, NE 35, SW 36, SE 37 (see inset_2x2_rules).",
-    "_layout": "1=isolated; 2–5=corners; 6–9=edges; 10–13 cardinal endpoints; 14=mesa; 23/24 straight peninsula extenders; 25/27/31/33 peninsula elbows; 26/28/30/32 peninsula tees; 29 4-way peninsula connector; 34–37 concave inset corners; 38–45 mixed endpoint connectors"
+    "_layout": "1=isolated; 2–5=corners; 6–9=edges; 10–13 cardinal endpoints; 14=mesa; 23/24 straight peninsula extenders; 25/27/31/33 peninsula elbows; 26/28/30/32 peninsula tees; 29 4-way peninsula connector; 34–37 concave inset corners; 38–45 mixed endpoint connectors; 46–47 final NEWS hill connectors"
   },
 
   "lake": {

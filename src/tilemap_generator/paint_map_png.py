@@ -2640,6 +2640,182 @@ def apply_hill_inset_2x2_pass(
     return frozenset(touched)
 
 
+@dataclasses.dataclass(frozen=True)
+class HillFourWayConnectorTileIds:
+    """Final raw mask-15 connector art selected from resolved N/E/S/W neighbor tiles."""
+
+    n7_e6_s9_w8: int = 47
+    n9_e8_s7_w6: int = 46
+    peninsula_4way: int = 29
+    n_pen_e_hill_s_hill_w_pen: int = 15
+    n_pen_e_pen_s_hill_w_hill: int = 17
+    n_hill_e_hill_s_pen_w_pen: int = 20
+    n_hill_e_pen_s_pen_w_hill: int = 22
+
+
+def parse_hill_four_way_connector_tile_ids(
+    hill_cfg: dict[str, Any] | None,
+) -> HillFourWayConnectorTileIds:
+    """Parse optional ``hill.four_way_connectors`` tile id overrides."""
+    defaults = dataclasses.asdict(HillFourWayConnectorTileIds())
+    if not isinstance(hill_cfg, dict):
+        return HillFourWayConnectorTileIds()
+    raw = hill_cfg.get("four_way_connectors")
+    if not isinstance(raw, dict):
+        return HillFourWayConnectorTileIds()
+    parsed: dict[str, int] = {}
+    for key, default in defaults.items():
+        value = raw.get(key, default)
+        if isinstance(value, bool):
+            parsed[key] = int(default)
+            continue
+        try:
+            parsed[key] = int(value)
+        except (TypeError, ValueError):
+            parsed[key] = int(default)
+    return HillFourWayConnectorTileIds(**parsed)
+
+
+def apply_hill_four_way_connector_pass(
+    ascii_lines: list[str],
+    base_hill_tile_ids: list[list[int | None]],
+    width: int,
+    height: int,
+    *,
+    tiles: HillFourWayConnectorTileIds | None = None,
+    peninsula_tile_ids: frozenset[int] | None = None,
+    hill_map: dict[int, int] | None = None,
+    hill_char: str = "I",
+) -> frozenset[tuple[int, int]]:
+    """Apply final 4-way connector rules to raw NEWS hill cells."""
+    t = tiles if tiles is not None else HillFourWayConnectorTileIds()
+    peninsula_ids = peninsula_tile_ids if peninsula_tile_ids is not None else DEFAULT_HILL_PENINSULA_PATH_TILE_IDS
+    hm = hill_map if hill_map is not None else HILL_MAP
+    source = [row[:] for row in base_hill_tile_ids]
+    touched: set[tuple[int, int]] = set()
+
+    def _tile(px: int, py: int) -> int | None:
+        if not (0 <= px < width and 0 <= py < height):
+            return None
+        return source[py][px]
+
+    def _raw_mask(px: int, py: int) -> int | None:
+        if not is_hill_char(ascii_lines, px, py, hill_char):
+            return None
+        return get_hill_adjacency_bitmask(
+            ascii_lines,
+            px,
+            py,
+            hill_char=hill_char,
+            exclude_interior_hill_neighbors=False,
+        )
+
+    def _peninsula_tile_for_geometry(px: int, py: int, tid: int | None) -> int | None:
+        if not is_hill_char(ascii_lines, px, py, hill_char):
+            return None
+        if tid in peninsula_ids:
+            return tid
+        rm = _raw_mask(px, py)
+        if rm in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and (tid is None or tid in (34, 35, 36, 37)):
+            return hm.get(int(rm), HILL_MAP.get(int(rm)))
+        if (
+            rm == 10
+            and not is_hill_char(ascii_lines, px, py - 1, hill_char)
+            and not is_hill_char(ascii_lines, px, py + 1, hill_char)
+        ):
+            return 23
+        if (
+            rm == 5
+            and not is_hill_char(ascii_lines, px - 1, py, hill_char)
+            and not is_hill_char(ascii_lines, px + 1, py, hill_char)
+        ):
+            return 24
+        return None
+
+    def _is_peninsula_at(px: int, py: int, tid: int | None) -> bool:
+        return _peninsula_tile_for_geometry(px, py, tid) is not None
+
+    def _is_non_peninsula_hill(px: int, py: int, tid: int | None) -> bool:
+        return is_hill_char(ascii_lines, px, py, hill_char) and not _is_peninsula_at(px, py, tid)
+
+    def _normalize_peninsula_neighbors(coords: tuple[tuple[int, int, int | None], ...]) -> None:
+        for px, py, tid in coords:
+            pt = _peninsula_tile_for_geometry(px, py, tid)
+            if pt is not None and (0 <= px < width and 0 <= py < height):
+                base_hill_tile_ids[py][px] = pt
+                touched.add((px, py))
+
+    for hy in range(height):
+        for hx in range(width):
+            if not is_hill_char(ascii_lines, hx, hy, hill_char):
+                continue
+            raw_mask = get_hill_adjacency_bitmask(
+                ascii_lines,
+                hx,
+                hy,
+                hill_char=hill_char,
+                exclude_interior_hill_neighbors=False,
+            )
+            if raw_mask != HILL_INTERIOR_MASK:
+                continue
+            tn = _tile(hx, hy - 1)
+            te = _tile(hx + 1, hy)
+            ts = _tile(hx, hy + 1)
+            tw = _tile(hx - 1, hy)
+            out_tile: int | None = None
+            if (tn, te, ts, tw) == (7, 6, 9, 8):
+                out_tile = t.n7_e6_s9_w8
+            elif (tn, te, ts, tw) == (9, 8, 7, 6):
+                out_tile = t.n9_e8_s7_w6
+            elif (
+                _is_peninsula_at(hx, hy - 1, tn)
+                and _is_peninsula_at(hx + 1, hy, te)
+                and _is_peninsula_at(hx, hy + 1, ts)
+                and _is_peninsula_at(hx - 1, hy, tw)
+            ):
+                out_tile = t.peninsula_4way
+                _normalize_peninsula_neighbors(
+                    ((hx, hy - 1, tn), (hx + 1, hy, te), (hx, hy + 1, ts), (hx - 1, hy, tw))
+                )
+            elif (
+                _is_peninsula_at(hx, hy - 1, tn)
+                and _is_non_peninsula_hill(hx + 1, hy, te)
+                and _is_non_peninsula_hill(hx, hy + 1, ts)
+                and _is_peninsula_at(hx - 1, hy, tw)
+            ):
+                out_tile = t.n_pen_e_hill_s_hill_w_pen
+                _normalize_peninsula_neighbors(((hx, hy - 1, tn), (hx - 1, hy, tw)))
+            elif (
+                _is_peninsula_at(hx, hy - 1, tn)
+                and _is_peninsula_at(hx + 1, hy, te)
+                and _is_non_peninsula_hill(hx, hy + 1, ts)
+                and _is_non_peninsula_hill(hx - 1, hy, tw)
+            ):
+                out_tile = t.n_pen_e_pen_s_hill_w_hill
+                _normalize_peninsula_neighbors(((hx, hy - 1, tn), (hx + 1, hy, te)))
+            elif (
+                _is_non_peninsula_hill(hx, hy - 1, tn)
+                and _is_non_peninsula_hill(hx + 1, hy, te)
+                and _is_peninsula_at(hx, hy + 1, ts)
+                and _is_peninsula_at(hx - 1, hy, tw)
+            ):
+                out_tile = t.n_hill_e_hill_s_pen_w_pen
+                _normalize_peninsula_neighbors(((hx, hy + 1, ts), (hx - 1, hy, tw)))
+            elif (
+                _is_non_peninsula_hill(hx, hy - 1, tn)
+                and _is_peninsula_at(hx + 1, hy, te)
+                and _is_peninsula_at(hx, hy + 1, ts)
+                and _is_non_peninsula_hill(hx - 1, hy, tw)
+            ):
+                out_tile = t.n_hill_e_pen_s_pen_w_hill
+                _normalize_peninsula_neighbors(((hx + 1, hy, te), (hx, hy + 1, ts)))
+            if out_tile is not None:
+                base_hill_tile_ids[hy][hx] = out_tile
+                touched.add((hx, hy))
+
+    return frozenset(touched)
+
+
 def apply_hill_peninsula_protrusion_adjacent_pass(
     ascii_lines: list[str],
     base_hill_tile_ids: list[list[int | None]],
@@ -3294,6 +3470,7 @@ def paint_map_to_png(
         _hill_cfg, hill_peninsula_connector_tiles
     )
     hill_inset_2x2_rules = parse_hill_inset_2x2_rules(_hill_cfg)
+    hill_four_way_connector_tiles = parse_hill_four_way_connector_tile_ids(_hill_cfg)
     if _hill_cfg:
         raw_split = _hill_cfg.get("maps_by_shape")
         if isinstance(raw_split, dict):
@@ -3806,6 +3983,16 @@ def paint_map_to_png(
             width,
             height,
             rules=hill_inset_2x2_rules,
+            hill_char="I",
+        )
+        apply_hill_four_way_connector_pass(
+            ascii_lines,
+            base_hill_tile_ids,
+            width,
+            height,
+            tiles=hill_four_way_connector_tiles,
+            peninsula_tile_ids=hill_peninsula_path_tile_ids,
+            hill_map=hill_map,
             hill_char="I",
         )
 
