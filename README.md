@@ -252,6 +252,76 @@ make tileset-terrain LEGEND=maps/generated_map.legend.json TILESET_ASE=assets/ti
 make map-build MAP_OUT_PREFIX=build/room01 TILESET_SOURCE=tilesets/overworld.tsx
 ```
 
+## District Opener (Gotchiverse)
+
+Open a rectangular district of gotchiverse citaadel chunks as a layered
+`.aseprite` file for viewing/editing in Aseprite. Reads Tiled TMJ chunk files,
+stitches them into one big tilemap per Tiled layer, repacks the referenced
+tilesets (margin/spacing -> tight grid), and invokes an Aseprite Lua script
+to build a `.aseprite` with tilemap layers.
+
+### Usage
+
+```bash
+tilemap-app district open \
+  --maps-root /path/to/gotchiverse-2d/public/maps/chunks \
+  --chunks 0-3,0-3 \
+  --out build/district_4x4.aseprite \
+  --tile-size 64 \
+  --open
+```
+
+Arguments:
+
+- `--maps-root` — directory containing `master.json` + `chunkN.json` files.
+- `--chunks x0-x1,y0-y1` — inclusive bounding rect of chunk IDs (e.g. `0-3,0-3` = 4x4 district).
+- `--out` — output `.aseprite` path.
+- `--tile-size` — pixels per tile (default 64; citaadel is 64x64).
+- `--open` — open the result in Aseprite GUI when done.
+- `--aseprite-bin` — optional explicit path to the Aseprite binary.
+
+Or via the dedicated CLI:
+
+```bash
+tilemap-district open \
+  --maps-root /path/to/gotchiverse-2d/public/maps/chunks \
+  --chunks 0-1,0-1 \
+  --out build/district_2x2.aseprite \
+  --open
+```
+
+### How it works
+
+1. **Stitch**: loads each chunk TMJ in the bbox and composites per-Tiled-layer
+   GID grids into one big grid (`(x1-x0+1)*chunkWidth x (y1-y0+1)*chunkHeight` tiles).
+2. **Repack tilesets**: slices each Tiled tileset PNG (with margin/spacing)
+   into a tight grid that Aseprite expects (PIL).
+3. **Split per tileset**: each Tiled layer is split into N Aseprite tilemap
+   layers, one per tileset actually used (Aseprite tilemap layers bind to a
+   single tileset). Empty splits are skipped. Layer naming:
+   `<tiled_layer>__<tileset_name>`.
+4. **Build**: an Aseprite Lua script (`assets/lua/import_district.lua`) creates
+   the sprite, tilesets, tilemap layers, and fills cells. Tile index 0 is
+   empty; user tiles start at 1 (Aseprite convention).
+
+### Tile animations
+
+Tiled per-tile frame animations (e.g. `alchem`, `roads`) are carried in the
+manifest. Aseprite has no native per-tile animation Lua API as of current
+versions, so animations are flattened to frame 0 and the metadata is stashed
+in `tileset.data` for future recovery. A warning is printed when animations
+are present.
+
+### Limitations (current version)
+
+- **Open-only**: no write-back to chunk TMJ files. Edits in Aseprite are not
+  automatically exported back.
+- **Citaadel biome only**: tested against the existing citaadel chunk
+  pipeline. New biomes (hyrule-castle, houses-interior, etc.) are not yet
+  supported.
+- **Mixed tile sizes**: the 128x128 `unplayable` tileset is handled as a
+  separate Aseprite tileset with its own tile size.
+
 ## Install As CLI Command
 
 On macOS with Homebrew Python, use a virtual environment (avoids `externally-managed-environment`):
@@ -321,6 +391,8 @@ tilemap-app map \
 tilemap-app tileset check
 tilemap-app tileset init --legend maps/sample_room.legend.json --out assets/tilesets/sample_room_tileset.aseprite --tile-width 32 --tile-height 32 --cols 4
 tilemap-app tileset terrain --legend maps/generated_map.legend.json --out assets/tilesets/generated_terrain.aseprite --tile-width 32 --tile-height 32 --cols 4 --export-dir build/tilesets
+
+tilemap-app district open --maps-root /path/to/gotchiverse-2d/public/maps/chunks --chunks 0-1,0-1 --out build/district_2x2.aseprite --tile-size 64 --open
 
 # Dedicated generator command
 tilemap-mapgen --width 128 --height 128 --tree-density 0.22 --forest-density 0.65 --water-density 0.10 --spawn-count 8 --spawn-clearing-size 15 --path-width-threshold 3 --mine-count 4 --shop-count 3 --creep-zone-count 6 --dead-end-count 8 --preview-in-aseprite --require-secret-npc-path --out maps/generated_map.txt

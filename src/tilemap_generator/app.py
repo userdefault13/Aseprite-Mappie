@@ -18,7 +18,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Unified Tilemap Generator CLI. "
             "Use 'map-gen' to create ASCII maps, 'map' to convert ASCII->tilemap, "
-            "and 'tileset' for Aseprite workflows. Run without args for interactive menu."
+            "'tileset' for Aseprite workflows, 'district' to open gotchiverse "
+            "districts in Aseprite, and 'export' to export tile indices. "
+            "Run without args for interactive menu."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=False)
@@ -28,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("map", help="Map generation commands.", add_help=False)
     subparsers.add_parser("tileset", help="Aseprite tileset commands.", add_help=False)
+    subparsers.add_parser(
+        "district",
+        help="Open a gotchiverse district (rect of TMJ chunks) in Aseprite.",
+        add_help=False,
+    )
     subparsers.add_parser(
         "export", help="Export tile indices from tilemap layers to JSON/CSV.", add_help=False
     )
@@ -608,6 +615,15 @@ def main(argv: list[str] | None = None) -> None:
             aseprite_cli.main(["--help"])
             return
         aseprite_cli.main(forwarded)
+        return
+
+    if args.command == "district":
+        from tilemap_generator import district_cli
+
+        if not forwarded:
+            district_cli.main(["--help"])
+            return
+        district_cli.main(forwarded)
         return
 
     if args.command == "export":
