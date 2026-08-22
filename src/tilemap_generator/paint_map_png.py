@@ -2687,7 +2687,12 @@ def apply_hill_four_way_connector_pass(
     hill_map: dict[int, int] | None = None,
     hill_char: str = "I",
 ) -> frozenset[tuple[int, int]]:
-    """Apply final 4-way connector rules to raw NEWS hill cells."""
+    """Apply final 4-way connector rules to raw NEWS hill cells.
+
+    Peninsula neighbors are detected from ``peninsula_tile_ids``, raw cardinal tip
+    masks clobbered by inset/``None`` (recovered to tip art), and straight extender
+    geometry (``E+W`` / ``N+S`` corridors with non-hill ASCII on the open sides).
+    """
     t = tiles if tiles is not None else HillFourWayConnectorTileIds()
     peninsula_ids = peninsula_tile_ids if peninsula_tile_ids is not None else DEFAULT_HILL_PENINSULA_PATH_TILE_IDS
     hm = hill_map if hill_map is not None else HILL_MAP
@@ -2716,6 +2721,7 @@ def apply_hill_four_way_connector_pass(
         if tid in peninsula_ids:
             return tid
         rm = _raw_mask(px, py)
+        # Tip cells clobbered by inset / missing paint recover to tip art.
         if rm in HILL_RAW_CARDINAL_PENINSULA_TIP_MASKS and (tid is None or tid in (34, 35, 36, 37)):
             return hm.get(int(rm), HILL_MAP.get(int(rm)))
         if (
@@ -3391,7 +3397,7 @@ def paint_map_to_png(
             shoreline_range = (int(sr[0]), int(sr[1]))
         special_tiles_cfg = shoreline_cfg.get("special_tiles")
         if isinstance(special_tiles_cfg, dict):
-            for key in ("lake_east", "tee_west", "tee_east", "south_cap_north_vertical", "diagonal_water_1", "diagonal_water_3", "diagonal_water_6", "diagonal_water_8", "junction_n3_w5_e8_s_water", "junction_n_water_s13_w16_e2", "junction_n16_or_17_w_water", "junction_n_water_w2_e8_s3", "junction_n2_w13_s9_e_grass", "junction_n10_w10_s_has_37_pattern_e_grass", "junction_n3_e4_s_grass_w_grass", "junction_nw_n_w_b_e_s_water", "junction_n9_e5_s_water_w16_or_17", "junction_n3_e_water_s3_w_lake9", "junction_n26_e7_s_water_w13", "junction_n_grass_e_grass_s5_w_corner", "junction_n3_e_water_s3_w_grass", "junction_n10_e5_s6_w_water_se_water"):
+            for key in ("lake_east", "tee_west", "tee_east", "south_cap_north_vertical", "diagonal_water_1", "diagonal_water_3", "diagonal_water_6", "diagonal_water_8", "junction_n3_w9_e16_s_water", "junction_n3_w5_e8_s_water", "junction_n_water_s13_w16_e2", "junction_n16_or_17_w_water", "junction_n_water_w2_e8_s3", "junction_n2_w13_s9_e_grass", "junction_n10_w10_s_has_37_pattern_e_grass", "junction_n3_e4_s_grass_w_grass", "junction_nw_n_w_b_e_s_water", "junction_n9_e5_s_water_w16_or_17", "junction_n3_e_water_s3_w_lake9", "junction_n26_e7_s_water_w13", "junction_n_grass_e_grass_s5_w_corner", "junction_n3_e_water_s3_w_grass", "junction_n10_e5_s6_w_water_se_water"):
                 try:
                     if special_tiles_cfg.get(key) is not None:
                         shoreline_special_tiles[key] = int(special_tiles_cfg[key])
@@ -4323,27 +4329,6 @@ def paint_map_to_png(
                             shore_start, shore_end = shoreline_range
                             if shore_start <= south_cap_tile <= shore_end:
                                 idx = south_cap_tile - shore_start
-                                if 0 <= idx < len(grass_shoreline):
-                                    return grass_shoreline[idx], True
-                    # Junction: N=tile 3, W=tile 5, E=tile 8, S=water -> use tile 35
-                    junction_tile = shoreline_special_tiles.get("junction_n3_w5_e8_s_water")
-                    if (
-                        junction_tile is not None
-                        and shore_ch == "B"
-                        and shoreline_sheet_path
-                        and shoreline_sheet_path.exists()
-                        and y > 0
-                        and y + 1 < height
-                    ):
-                        north_t = _get_ocean_shoreline_tile_index(x, y - 1)
-                        west_t = _get_ocean_shoreline_tile_index(x - 1, y) if x > 0 else None
-                        east_t = _get_ocean_shoreline_tile_index(x + 1, y)
-                        south_ch = _get_ascii_cell(x, y + 1)
-                        south_is_water = south_ch in WATER_CHARS
-                        if north_t == 3 and west_t == 5 and east_t == 8 and south_is_water:
-                            shore_start, shore_end = shoreline_range
-                            if shore_start <= junction_tile <= shore_end:
-                                idx = junction_tile - shore_start
                                 if 0 <= idx < len(grass_shoreline):
                                     return grass_shoreline[idx], True
                     # Junction: N=water, S=tile 13, W=tile 16, E=tile 2 -> use tile 10

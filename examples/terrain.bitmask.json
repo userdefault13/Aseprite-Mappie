@@ -140,7 +140,7 @@
       "connector_4way": 29
     },
     "four_way_connectors": {
-      "_comment": "Final raw mask-15 pass after insets. Match resolved N/E/S/W tile IDs: 7,6,9,8 -> 47; 9,8,7,6 -> 46; all four peninsula neighbors -> 29. Peninsula neighbors include peninsula_path_tile_ids, raw cardinal tips, and straight extender geometry (E+W open N/S -> 23, N+S open E/W -> 24). Mixed pen/hill quadrants use 15,17,20,22.",
+      "_comment": "Final raw mask-15 pass after insets. Match resolved N/E/S/W tile IDs: 7,6,9,8 -> 47; 9,8,7,6 -> 46; all four peninsula neighbors -> 29. Peninsula neighbors include peninsula_path_tile_ids, raw cardinal tips clobbered by inset/None (recovered to tip art), and straight extender geometry (E+W open N/S -> 23, N+S open E/W -> 24). Mixed pen/hill quadrants use 15,17,20,22.",
       "n7_e6_s9_w8": 47,
       "n9_e8_s7_w6": 46,
       "peninsula_4way": 29,
@@ -219,8 +219,8 @@
   },
 
   "shoreline": {
-    "range": [1, 55],
-    "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
+    "range": [1, 60],
+    "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-60. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
     "special_tiles": {
       "lake_east": 9,
       "tee_west": 32,
@@ -230,7 +230,7 @@
       "diagonal_water_3": 40,
       "diagonal_water_6": 37,
       "diagonal_water_8": 36,
-      "junction_n3_w5_e8_s_water": 35,
+      "junction_n3_w9_e16_s_water": 35,
       "junction_n_water_s13_w16_e2": 10,
       "junction_n16_or_17_w_water": 10,
       "junction_n_water_w2_e8_s3": 50,

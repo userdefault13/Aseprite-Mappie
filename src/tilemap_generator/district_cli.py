@@ -23,6 +23,27 @@ from tilemap_generator.aseprite_cli import resolve_aseprite_bin, run
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TILE_SIZE = 64
+# Aseprite's .aseprite format stores sprite dimensions as 16-bit values, so a
+# sprite cannot exceed 65535px on either axis. Sprites past this silently
+# corrupt on save (reopen as 2048x2048 or 0x0). We downscale tiles to fit.
+MAX_ASEPRITE_DIM = 65535
+TILE_SIZE_CASCADE = (64, 32, 16, 8, 4, 2, 1)
+
+
+def fit_tile_size(tile_size: int, tiles_w: int, tiles_h: int) -> int:
+    """Largest cascade tile size (<= requested) whose district sprite fits
+    Aseprite's 65535px dimension limit; downscales in halves as needed."""
+    longest = max(tiles_w, tiles_h)
+    fitted = next(
+        (t for t in TILE_SIZE_CASCADE if t <= tile_size and t * longest <= MAX_ASEPRITE_DIM),
+        None,
+    )
+    if fitted is None:
+        raise ValueError(
+            f"District is {tiles_w}x{tiles_h} tiles; even at 1px/tile it would be "
+            f"{longest}px, exceeding Aseprite's {MAX_ASEPRITE_DIM}px limit."
+        )
+    return fitted
 
 
 def parse_chunks_bbox(spec: str) -> tuple[int, int, int, int]:
@@ -205,8 +226,13 @@ def repack_tileset(
     ts: dict,
     maps_root: Path,
     out_dir: Path,
+    target_tile_size: int | None = None,
 ) -> dict:
     """Slice a Tiled tileset PNG (with margin/spacing) into a tight-grid PNG.
+
+    If ``target_tile_size`` is set (and differs from the native tile size),
+    each tile is resized (Lanczos) to ``target_tile_size`` square so the final
+    district sprite stays within Aseprite's dimension limits.
 
     Returns a dict with keys: name, firstgid, png_path, columns, tile_count,
     tile_width, tile_height, animations.
@@ -254,16 +280,24 @@ def repack_tileset(
 
     rows = (tile_count + columns - 1) // columns if columns > 0 else 0
 
+    downscale = target_tile_size is not None and (
+        target_tile_size != tile_w or target_tile_size != tile_h
+    )
+    out_tw = target_tile_size if downscale else tile_w
+    out_th = target_tile_size if downscale else tile_h
+
     # Slice + repack
     src = Image.open(image_path).convert("RGBA")
-    sheet = Image.new("RGBA", (columns * tile_w, rows * tile_h), (0, 0, 0, 0))
+    sheet = Image.new("RGBA", (columns * out_tw, rows * out_th), (0, 0, 0, 0))
     for idx in range(tile_count):
         sx = idx % columns
         sy = idx // columns
         left = margin + sx * (tile_w + spacing)
         top = margin + sy * (tile_h + spacing)
         tile = src.crop((left, top, left + tile_w, top + tile_h))
-        sheet.paste(tile, (sx * tile_w, sy * tile_h))
+        if downscale and (out_tw != tile_w or out_th != tile_h):
+            tile = tile.resize((out_tw, out_th), Image.LANCZOS)
+        sheet.paste(tile, (sx * out_tw, sy * out_th))
     src.close()
 
     safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
@@ -301,8 +335,8 @@ def repack_tileset(
         "png_path": str(out_path),
         "columns": columns,
         "tile_count": tile_count,
-        "tile_width": tile_w,
-        "tile_height": tile_h,
+        "tile_width": out_tw,
+        "tile_height": out_th,
         "animations": animations,
     }
 
@@ -414,12 +448,22 @@ def command_open(args: argparse.Namespace) -> None:
             f"{chunks_h}x{chunks_v}"
         )
 
-    tile_size = args.tile_size
-    if tile_size <= 0:
+    if args.tile_size <= 0:
         raise ValueError("--tile-size must be > 0")
 
     out_path = Path(args.out).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    tiles_w = (x1 - x0 + 1) * int(master["chunkWidth"])
+    tiles_h = (y1 - y0 + 1) * int(master["chunkHeight"])
+    tile_size = fit_tile_size(args.tile_size, tiles_w, tiles_h)
+    if tile_size != args.tile_size:
+        print(
+            f"  District {tiles_w}x{tiles_h} tiles exceeds Aseprite's "
+            f"{MAX_ASEPRITE_DIM}px limit at {args.tile_size}px/tile; "
+            f"downscaling tiles to {tile_size}px (sprite {tiles_w}*{tile_size}x"
+            f"{tiles_h}*{tile_size}px)."
+        )
 
     print(f"Stitching district chunks {x0}-{x1},{y0}-{y1} from {maps_root} ...")
     tiled_layers, tilesets_by_name = stitch_layers(
@@ -435,7 +479,9 @@ def command_open(args: argparse.Namespace) -> None:
         repacked: dict[str, dict] = {}
         for name, ts in tilesets_by_name.items():
             try:
-                repacked[name] = repack_tileset(ts, maps_root, tmp_path)
+                repacked[name] = repack_tileset(
+                    ts, maps_root, tmp_path, target_tile_size=tile_size
+                )
             except FileNotFoundError as e:
                 print(f"  Warning: skipping tileset {name!r}: {e}", file=sys.stderr)
         if not repacked:
@@ -443,10 +489,24 @@ def command_open(args: argparse.Namespace) -> None:
         print(f"  Repacked {len(repacked)} tilesets")
 
         splits = build_layer_splits(tiled_layers, tilesets_by_name, repacked)
+        if args.only_tilesets:
+            prefixes = [p.strip() for p in args.only_tilesets.split(",") if p.strip()]
+            kept = [
+                s for s in splits
+                if any(s["tileset_name"].startswith(p) for p in prefixes)
+            ]
+            if not kept:
+                raise ValueError(
+                    f"--only-tilesets matched no layers (available tilesets: "
+                    f"{sorted({s['tileset_name'] for s in splits})})"
+                )
+            print(
+                f"  Filtered to {len(kept)} layers via --only-tilesets "
+                f"({len(splits) - len(kept)} removed)"
+            )
+            splits = kept
         print(f"  Built {len(splits)} Aseprite tilemap layer splits")
 
-        tiles_w = (x1 - x0 + 1) * int(master["chunkWidth"])
-        tiles_h = (y1 - y0 + 1) * int(master["chunkHeight"])
         manifest = build_manifest(tiles_w, tiles_h, tile_size, repacked, splits)
         manifest_path = tmp_path / "manifest.json"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -520,6 +580,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--open",
         action="store_true",
         help="Open the result in Aseprite GUI when done.",
+    )
+    open_parser.add_argument(
+        "--only-tilesets",
+        default=None,
+        help=(
+            "Comma-separated tileset name prefixes; keep only layers bound to "
+            'matching tilesets (e.g. "tower" keeps the citadel tower walls).'
+        ),
     )
 
     return parser

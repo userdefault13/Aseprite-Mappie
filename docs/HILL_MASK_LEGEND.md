@@ -88,7 +88,7 @@ These defaults are configurable through `hill.inset_2x2_rules`; the pass writes 
 
 ## Final 4-Way Hill Connectors
 
-After the inset pass, the painter checks raw mask `15` cells (`N+E+S+W` are all hill) against the resolved tile IDs and geometry of their four cardinal neighbors. Peninsula neighbors include configured `hill.peninsula_path_tile_ids`, raw cardinal tips, and straight extender geometry (`E+W` with open `N/S` -> `23`, `N+S` with open `E/W` -> `24`).
+After the inset pass, the painter checks raw mask `15` cells (`N+E+S+W` are all hill) against the resolved tile IDs and geometry of their four cardinal neighbors. Peninsula neighbors include configured `hill.peninsula_path_tile_ids`, raw cardinal tips clobbered by inset/`None` (recovered to tip art), and straight extender geometry (`E+W` with open `N/S` -> `23`, `N+S` with open `E/W` -> `24`).
 
 | Neighbor tile IDs | Output |
 |-------------------|-------:|

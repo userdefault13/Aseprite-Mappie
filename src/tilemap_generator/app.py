@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import random
 import subprocess
@@ -33,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "district",
         help="Open a gotchiverse district (rect of TMJ chunks) in Aseprite.",
+        add_help=False,
+    )
+    subparsers.add_parser(
+        "gotchiverse",
+        help="Gotchiverse workflows (district open).",
         add_help=False,
     )
     subparsers.add_parser(
@@ -558,14 +564,163 @@ def run_prompted_paint(
     aseprite_cli.main(args)
 
 
+CHUNKS_PER_HOOD = 16  # gotchiverse hood (district) = 1056 tiles / 66 tiles per chunk
+DISTRICT_ID_GRID: list[list[str]] = [
+    ["43", "20", "21", "22", "23", "24", "25", "26"],
+    ["42", "19", "4", "5", "6", "7", "8", "27"],
+    ["41", "18", "3", "1a", "1b", "1c", "9", "28"],
+    ["40", "17", "2", "1f", "1e", "1d", "10", "29"],
+    ["39", "16", "15", "14", "13", "12", "11", "30"],
+]
+GOTCHIVERSE_CONFIG_FILE = "gotchiverse.config.json"
+
+
+def _resolve_gotchiverse_maps_root() -> str:
+    """Maps-root default: env var > gotchiverse.config.json > hardcoded fallback."""
+    env_root = os.environ.get("MAP_GOTCHIVERSE_MAPS_ROOT")
+    if env_root:
+        return env_root
+    cfg_path = _project_root() / GOTCHIVERSE_CONFIG_FILE
+    if cfg_path.exists():
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            root = data.get("maps_root")
+            if isinstance(root, str) and root.strip():
+                return root.strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return str(Path.home() / "Dev" / "gotchiverse-2d" / "public" / "maps" / "chunks")
+
+
+DEFAULT_GOTCHIVERSE_MAPS_ROOT = _resolve_gotchiverse_maps_root()
+
+
+def gotchiverse_district_choices() -> list[tuple[str, str, tuple[int, int, int, int]]]:
+    """Return [(district_id, label, (x0, x1, y0, y1 chunk bbox)), ...].
+
+    District '1' spans the 3x2-hood Citaadel core (grid cols 3-6, rows 3-4) and
+    is broken into the playable sub-districts 1a-1f. Every other district is a
+    single CHUNKS_PER_HOOD x CHUNKS_PER_HOOD block. Row/col are 0-based.
+    """
+    choices: list[tuple[str, str, tuple[int, int, int, int]]] = [
+        ("1", "1 (full Citaadel core)", (48, 95, 32, 63))
+    ]
+    for r, row in enumerate(DISTRICT_ID_GRID):
+        for c, rid in enumerate(row):
+            if rid == "1":
+                continue
+            x0 = c * CHUNKS_PER_HOOD
+            y0 = r * CHUNKS_PER_HOOD
+            choices.append((rid, rid, (x0, x0 + CHUNKS_PER_HOOD - 1, y0, y0 + CHUNKS_PER_HOOD - 1)))
+    return choices
+
+
+def run_prompted_district_menu() -> None:
+    """Pick a gotchiverse district, then full-map or specific-chunk open."""
+    choices = gotchiverse_district_choices()
+    while True:
+        print("\nWhich district?")
+        print("  (chunk bbox shown as x0-x1,y0-y1)\n")
+        for i, (rid, label, (x0, x1, y0, y1)) in enumerate(choices, 1):
+            print(f"{i:>3}. {label:<22} {x0}-{x1},{y0}-{y1}")
+        print("  0. Back")
+        sel = input(f"Select [0-{len(choices)}]: ").strip()
+        if sel in ("0", "q", "quit", "back"):
+            return
+        try:
+            idx = int(sel)
+        except ValueError:
+            print("Enter a valid number.")
+            continue
+        if not (1 <= idx <= len(choices)):
+            print("Invalid option.")
+            continue
+        district_id, label, (x0, x1, y0, y1) = choices[idx - 1]
+        break
+
+    while True:
+        print("\nOpen mode")
+        print("1. Full map")
+        print("2. Specific chunk")
+        print("3. Back")
+        mode = input("Select [1-3]: ").strip()
+        if mode == "3":
+            return
+        if mode == "1":
+            chunks = f"{x0}-{x1},{y0}-{y1}"
+            out_default = f"build/district_{district_id}.aseprite"
+            break
+        if mode == "2":
+            dx = prompt_int("Chunk x within district", 0, f"0-{x1 - x0}")
+            dy = prompt_int("Chunk y within district", 0, f"0-{y1 - y0}")
+            if dx > x1 - x0 or dy > y1 - y0:
+                print("Invalid chunk.")
+                continue
+            chunks = f"{x0 + dx}-{x0 + dx},{y0 + dy}-{y0 + dy}"
+            out_default = f"build/district_{district_id}_chunk_{dx}_{dy}.aseprite"
+            break
+        print("Invalid option.")
+
+    run_prompted_district_open(
+        chunks_default=chunks,
+        out_default=out_default,
+    )
+
+
+def run_prompted_district_open(
+    chunks_default: str = "0-0,0-0",
+    out_default: str = "build/district.aseprite",
+) -> None:
+    """Prompt for district 'open' args, then run the district CLI."""
+    from tilemap_generator import district_cli
+
+    print("\nOpen Gotchiverse District in Aseprite\n")
+    maps_root = prompt_str(
+        "Gotchiverse maps/chunks dir (contains master.json + chunkN.json)",
+        DEFAULT_GOTCHIVERSE_MAPS_ROOT,
+    )
+    chunks = prompt_str('Chunk bbox "x0-x1,y0-y1"', chunks_default)
+    out = prompt_str("Output .aseprite path", out_default)
+    tile_size = prompt_int("Tile size (pixels per tile)", district_cli.DEFAULT_TILE_SIZE, ">0")
+    open_after = prompt_bool("Open in Aseprite when done", True)
+
+    args = [
+        "open",
+        "--maps-root", maps_root,
+        "--chunks", chunks,
+        "--out", out,
+        "--tile-size", str(tile_size),
+    ]
+    if open_after:
+        args.append("--open")
+
+    print("\nRunning district open...\n")
+    district_cli.main(args)
+
+
+def run_gotchiverse_menu() -> None:
+    while True:
+        print("\nGotchiverse")
+        print("1. Open district in Aseprite")
+        print("2. Back to menu")
+        choice = input("Select [1-2]: ").strip() or "1"
+        if choice == "1":
+            run_prompted_district_menu()
+            continue
+        if choice in ("2", "q", "quit", "back"):
+            return
+        print("Invalid option.")
+
+
 def run_menu() -> None:
     while True:
         print("\nTilemap CLI Menu")
         print("1. Generate new ASCII map")
         print("2. Paint ASCII map in Aseprite")
         print("3. View or edit mask (legend + optional terrain config)")
-        print("4. Exit")
-        choice = input("Select an option [1-4]: ").strip()
+        print("4. Gotchiverse")
+        print("5. Exit")
+        choice = input("Select an option [1-5]: ").strip()
         if choice == "1":
             run_prompted_map_gen()
             return
@@ -575,7 +730,10 @@ def run_menu() -> None:
         if choice == "3":
             run_mask_legend_and_edit()
             continue
-        if choice in ("4", "q", "quit", "exit"):
+        if choice == "4":
+            run_gotchiverse_menu()
+            continue
+        if choice in ("5", "q", "quit", "exit"):
             print("Exiting.")
             return
         print("Invalid option.")
@@ -617,7 +775,7 @@ def main(argv: list[str] | None = None) -> None:
         aseprite_cli.main(forwarded)
         return
 
-    if args.command == "district":
+    if args.command in ("district", "gotchiverse"):
         from tilemap_generator import district_cli
 
         if not forwarded:

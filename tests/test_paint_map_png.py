@@ -39,6 +39,7 @@ from tilemap_generator.paint_map_png import (
     apply_hill_four_way_connector_pass,
     parse_hill_inset_2x2_rules,
     hill_mask5_vertical_spine_open_diagonals_for_tile24,
+    is_hill_deep_interior_cell,
 )
 
 
@@ -1455,6 +1456,36 @@ class HillFourWayConnectorPassTests(unittest.TestCase):
         self.assertIn((2, 2), touched)
         self.assertIn((1, 2), touched)
         self.assertIn((2, 3), touched)
+
+    def test_case6_full_pipeline_user_shape(self) -> None:
+        """Peninsula → inset → four-way on the SW-arm case6 ASCII shape."""
+        lines = [
+            ".....",
+            "..II.",
+            "IIII.",
+            "..I..",
+            ".....",
+        ]
+        width, height = 5, 5
+        base: list[list[int | None]] = [[None] * width for _ in range(height)]
+        for y in range(height):
+            for x in range(width):
+                if lines[y][x] != "I":
+                    continue
+                if is_hill_deep_interior_cell(lines, x, y, hill_char="I"):
+                    continue
+                rm = get_hill_adjacency_bitmask(
+                    lines, x, y, hill_char="I", exclude_interior_hill_neighbors=False
+                )
+                base[y][x] = resolve_hill_basic_mask_paint_tile_id(
+                    lines, x, y, raw_cardinal_mask=int(rm), hill_map=HILL_MAP, hill_char="I"
+                )
+        apply_hill_peninsula_connector_pass(lines, base, width, height, hill_char="I")
+        apply_hill_inset_2x2_pass(lines, base, width, height)
+        apply_hill_four_way_connector_pass(lines, base, width, height, hill_map=HILL_MAP)
+        self.assertEqual(base[2][2], 20)
+        self.assertEqual(base[2][1], 23)
+        self.assertEqual(base[3][2], 12)
 
     def test_case7_es_peninsula_nw_hill_uses_tile_22(self) -> None:
         lines = [".I.", "III", ".I."]
