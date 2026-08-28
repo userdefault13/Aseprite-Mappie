@@ -242,16 +242,16 @@
       "junction_n10_e5_s6_w_water_se_water": 32
     },
     "inset_corner_tiles": {
-      "top_left": 1,
-      "top_right": 1,
-      "bottom_left": 1,
-      "bottom_right": 1
+      "top_left": 38,
+      "top_right": 37,
+      "bottom_left": 40,
+      "bottom_right": 39
     },
     "inset_direct_corner_tiles": {
-      "top_left": 37,
+      "top_left": 38,
       "top_right": 37,
-      "bottom_left": 39,
-      "bottom_right": 40
+      "bottom_left": 40,
+      "bottom_right": 39
     },
     "inset_edge_tiles": {
       "top": 26,
@@ -281,16 +281,16 @@
       "0": 10,
       "1": 2,
       "2": 3,
-      "3": 37,
+      "3": 4,
       "4": 5,
       "5": 6,
-      "6": 39,
+      "6": 7,
       "7": 8,
       "8": 9,
-      "9": 36,
+      "9": 10,
       "10": 6,
       "11": 16,
-      "12": 38,
+      "12": 13,
       "13": 16,
       "14": 15,
       "15": 13
