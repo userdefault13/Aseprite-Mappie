@@ -215,7 +215,7 @@
   },
 
   "shoreline": {
-    "range": [1, 55],
+    "range": [1, 45],
     "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
     "special_tiles": {
       "lake_east": 9,

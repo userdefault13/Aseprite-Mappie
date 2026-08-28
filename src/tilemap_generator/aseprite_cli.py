@@ -391,12 +391,19 @@ def command_paint(args: argparse.Namespace) -> None:
                 if shoreline_path_resolved.suffix.lower() in (".aseprite", ".ase"):
                     shoreline_sheet_path = tmp_path / "shorelines_sheet.png"
                     # Use 5 columns to match common shoreline autotile layout (e.g. 5x7 = 35 tiles)
-                    export_treeset_to_png(
-                        shoreline_path_resolved,
-                        shoreline_sheet_path,
-                        aseprite_bin,
-                        sheet_columns=5,
-                    )
+                    try:
+                        export_treeset_to_png(
+                            shoreline_path_resolved,
+                            shoreline_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=5,
+                        )
+                    except (FileNotFoundError, RuntimeError):
+                        # Aseprite not available or export failed; try fallback .png
+                        shoreline_sheet_path = None
+                        png_fallback = shoreline_path_resolved.with_suffix(".png")
+                        if png_fallback.exists():
+                            shoreline_sheet_path = png_fallback
                 elif shoreline_path_resolved.suffix.lower() == ".png":
                     shoreline_sheet_path = shoreline_path_resolved
 
@@ -405,12 +412,19 @@ def command_paint(args: argparse.Namespace) -> None:
             if lakesrivers_path_resolved:
                 if lakesrivers_path_resolved.suffix.lower() in (".aseprite", ".ase"):
                     lakesrivers_sheet_path = tmp_path / "lakesrivers_sheet.png"
-                    export_treeset_to_png(
-                        lakesrivers_path_resolved,
-                        lakesrivers_sheet_path,
-                        aseprite_bin,
-                        sheet_columns=11,
-                    )
+                    try:
+                        export_treeset_to_png(
+                            lakesrivers_path_resolved,
+                            lakesrivers_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=11,
+                        )
+                    except (FileNotFoundError, RuntimeError):
+                        # Aseprite not available or export failed; try fallback .png
+                        lakesrivers_sheet_path = None
+                        png_fallback = lakesrivers_path_resolved.with_suffix(".png")
+                        if png_fallback.exists():
+                            lakesrivers_sheet_path = png_fallback
                 elif lakesrivers_path_resolved.suffix.lower() == ".png":
                     lakesrivers_sheet_path = lakesrivers_path_resolved
 
