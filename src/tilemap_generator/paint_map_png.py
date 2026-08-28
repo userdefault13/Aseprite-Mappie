@@ -154,6 +154,8 @@ POI_LAYERS: dict[str, str] = {
     "Creep": "C",
     "DeadEnd": "D",
     "Secret": "N",
+    "CitadelWall": "W",
+    "CitadelTower": "O",
 }
 
 # River bank masks: water on opposite sides (narrow channel)

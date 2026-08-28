@@ -20,7 +20,9 @@
     "H": 10,
     "C": 11,
     "D": 12,
-    "N": 13
+    "N": 13,
+    "W": 119,
+    "O": 120
   },
 
   "grass_path": "examples/grass.aseprite",
@@ -30,6 +32,8 @@
   "hill_path": "examples/hills.aseprite",
   "dirt_path": "examples/dirt.aseprite",
   "trees_path": "examples/trees.aseprite",
+  "citadel_walls_path": "build/citadel_walls_combined.png",
+  "citadel_towers_path": "build/towers_newski.png",
 
   "_layout": "Documentation of grass.png tile organization. Paths relative to project root. Adjust grass_shoreline mapping to match your tile visuals. N=1,E=2,S=4,W=8 for water adjacency bitmask.",
 
@@ -337,5 +341,14 @@
   },
   "extended_shoreline_masks": [7, 11, 13, 14, 15],
   "river_masks": [5, 10],
-  "interior_corner_masks": [3, 6, 9, 12]
+  "interior_corner_masks": [3, 6, 9, 12],
+
+  "citadel": {
+    "description": "Citadel walls and towers. W = wall segments, O = corner towers.",
+    "walls_tile_id": 119,
+    "tower_tile_id": 120,
+    "walls_path": "build/citadel_walls_combined.png",
+    "towers_path": "build/towers_newski.png",
+    "_layout": "Citadel is painted as a rectangular fortress structure. Walls form the perimeter, towers at the four corners."
+  }
 }
