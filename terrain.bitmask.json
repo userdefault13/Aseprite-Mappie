@@ -20,7 +20,9 @@
     "H": 10,
     "C": 11,
     "D": 12,
-    "N": 13
+    "N": 13,
+    "W": 119,
+    "O": 120
   },
 
   "grass_path": "examples/grass.aseprite",
@@ -30,6 +32,8 @@
   "hill_path": "examples/hills.aseprite",
   "dirt_path": "examples/dirt.aseprite",
   "trees_path": "examples/trees.aseprite",
+  "citadel_walls_path": "build/citadel_walls_combined.png",
+  "citadel_towers_path": "build/towers_newski.png",
 
   "_layout": "Documentation of grass.png tile organization. Paths relative to project root. Adjust grass_shoreline mapping to match your tile visuals. N=1,E=2,S=4,W=8 for water adjacency bitmask.",
 
@@ -211,7 +215,7 @@
   },
 
   "shoreline": {
-    "range": [1, 55],
+    "range": [1, 45],
     "description": "shoreline_path (shorelines.aseprite) is used for continent shoreline when set. Tiles 1-35. shoreline_map maps bitmask 0-15 to 1-based tile index. Match range to your sheet tile count.",
     "special_tiles": {
       "lake_east": 9,
@@ -238,16 +242,16 @@
       "junction_n10_e5_s6_w_water_se_water": 32
     },
     "inset_corner_tiles": {
-      "top_left": 36,
+      "top_left": 38,
       "top_right": 37,
-      "bottom_left": 38,
+      "bottom_left": 40,
       "bottom_right": 39
     },
     "inset_direct_corner_tiles": {
-      "top_left": 37,
-      "top_right": 36,
-      "bottom_left": 41,
-      "bottom_right": 40
+      "top_left": 38,
+      "top_right": 37,
+      "bottom_left": 40,
+      "bottom_right": 39
     },
     "inset_edge_tiles": {
       "top": 26,
@@ -337,5 +341,14 @@
   },
   "extended_shoreline_masks": [7, 11, 13, 14, 15],
   "river_masks": [5, 10],
-  "interior_corner_masks": [3, 6, 9, 12]
+  "interior_corner_masks": [3, 6, 9, 12],
+
+  "citadel": {
+    "description": "Citadel walls and towers. W = wall segments, O = corner towers.",
+    "walls_tile_id": 119,
+    "tower_tile_id": 120,
+    "walls_path": "build/citadel_walls_combined.png",
+    "towers_path": "build/towers_newski.png",
+    "_layout": "Citadel is painted as a rectangular fortress structure. Walls form the perimeter, towers at the four corners."
+  }
 }

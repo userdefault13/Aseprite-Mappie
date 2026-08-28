@@ -154,6 +154,8 @@ POI_LAYERS: dict[str, str] = {
     "Creep": "C",
     "DeadEnd": "D",
     "Secret": "N",
+    "CitadelWall": "W",
+    "CitadelTower": "O",
 }
 
 # River bank masks: water on opposite sides (narrow channel)
@@ -3410,7 +3412,8 @@ def paint_map_to_png(
             for key in ("top_left", "top_right", "bottom_left", "bottom_right"):
                 try:
                     if inset_direct_corner_cfg.get(key) is not None:
-                        shoreline_inset_direct_corner_tiles[f"direct_{key}"] = int(inset_direct_corner_cfg[key])
+                        tile_val = int(inset_direct_corner_cfg[key])
+                        shoreline_inset_direct_corner_tiles[f"direct_{key}"] = tile_val
                 except (TypeError, ValueError):
                     continue
         inset_edge_cfg = shoreline_cfg.get("inset_edge_tiles")
@@ -3839,11 +3842,12 @@ def paint_map_to_png(
         has_sw = _get_ascii_cell(ax - 1, ay + 1) == "B"
         has_nw = _get_ascii_cell(ax - 1, ay - 1) == "B"
         if has_n and has_e and has_s and has_w:
-            return resolve_center_ocean_inset_tile(
+            result = resolve_center_ocean_inset_tile(
                 _get_ocean_shoreline_tile_index(ax, ay - 1),
                 _get_ocean_shoreline_tile_index(ax + 1, ay),
                 shoreline_inset_edge_tiles,
             )
+            return result
         pattern = get_ocean_inset_pattern(
             has_n,
             has_e,
@@ -3859,12 +3863,13 @@ def paint_map_to_png(
         if not allow_shore_cell and _ocean_inset_notch_continues(ax, ay, pattern):
             return None
         if pattern == "bottom":
-            return resolve_bottom_ocean_inset_tile(
+            result = resolve_bottom_ocean_inset_tile(
                 _get_ocean_shoreline_tile_index(ax, ay - 1),
                 shoreline_inset_edge_tiles,
                 shoreline_inset_direct_corner_tiles,
             )
-        return match_ocean_inset_special_tile(
+            return result
+        result = match_ocean_inset_special_tile(
             has_n,
             has_e,
             has_s,
@@ -3877,6 +3882,7 @@ def paint_map_to_png(
             has_sw=has_sw,
             has_nw=has_nw,
         )
+        return result
 
     def _ocean_inset_notch_continues(ax: int, ay: int, pattern: str) -> bool:
         """Treat inset helpers as connectors only when they have less than two shoreline links."""
@@ -4174,6 +4180,32 @@ def paint_map_to_png(
                 """Returns (tile, is_shoreline). is_shoreline=True when tile is from shoreline set.
                 Map-building rules (1-wide shore, water-adjacency, NESW connectivity) are enforced
                 in map_gen_cli; painter trusts the ASCII and selects tiles."""
+                # CRITICAL FIX FOR L-JUNCTION BUG: Handle B cells with wmask=0 that form L-junctions
+                # (two straight shoreline edges meeting at an inner corner) FIRST, before any other logic.
+                # This fixes the bug where the elbow of an L-junction renders as two overlapping straight
+                # tiles instead of a single connecting inner corner tile.
+                if shore_ch == "B" and wmask == 0 and shoreline_sheet_path and shoreline_sheet_path.exists():
+                    has_n_b = shore_ascii_lines[y - 1][x] == "B" if y > 0 and x < len(shore_ascii_lines[y - 1]) else False
+                    has_e_b = shore_ascii_lines[y][x + 1] == "B" if x + 1 < width and x + 1 < len(shore_ascii_lines[y]) else False
+                    has_s_b = shore_ascii_lines[y + 1][x] == "B" if y + 1 < height and x < len(shore_ascii_lines[y + 1]) else False
+                    has_w_b = shore_ascii_lines[y][x - 1] == "B" if x > 0 else False
+                    l_junction_tile = None
+                    # E and S neighbors are B (horizontal + vertical straight) -> top-right inner corner
+                    if not has_n_b and has_e_b and has_s_b and not has_w_b and shoreline_inset_direct_corner_tiles:
+                        l_junction_tile = shoreline_inset_direct_corner_tiles.get("direct_top_right")
+                    # Other L-junction orientations
+                    elif not has_n_b and not has_e_b and has_s_b and has_w_b and shoreline_inset_direct_corner_tiles:
+                        l_junction_tile = shoreline_inset_direct_corner_tiles.get("direct_top_left")
+                    elif has_n_b and has_e_b and not has_s_b and not has_w_b and shoreline_inset_direct_corner_tiles:
+                        l_junction_tile = shoreline_inset_direct_corner_tiles.get("direct_bottom_right")
+                    elif has_n_b and not has_e_b and not has_s_b and has_w_b and shoreline_inset_direct_corner_tiles:
+                        l_junction_tile = shoreline_inset_direct_corner_tiles.get("direct_bottom_left")
+                    if l_junction_tile is not None:
+                        shore_start, shore_end = shoreline_range
+                        if shore_start <= l_junction_tile <= shore_end:
+                            idx = l_junction_tile - shore_start
+                            if 0 <= idx < len(grass_shoreline):
+                                return grass_shoreline[idx], True
                 if not grass_imgs:
                     return None, False
                 land_chars = frozenset("G.P") | POI_CHARS | frozenset("ITF")
@@ -4456,6 +4488,8 @@ def paint_map_to_png(
                         west_ch_40 = _get_ascii_cell(x - 1, y)
                         south_grass = south_ch_40 in frozenset("G.PITF") | POI_CHARS
                         west_grass = west_ch_40 in frozenset("G.PITF") | POI_CHARS
+                        if x == 1 and y == 1:
+                            print(f"DEBUG junction_40: north_t={north_t_40}, east_t={east_t_40}, south_grass={south_grass}, west_grass={west_grass}", file=sys.stderr)
                         if north_t_40 == 3 and east_t_40 in (3, 4) and south_grass and west_grass:
                             shore_start, shore_end = shoreline_range
                             if shore_start <= junction_tile_40 <= shore_end:
@@ -4683,6 +4717,25 @@ def paint_map_to_png(
                             y,
                             allow_shore_cell=explicit_shore and wmask == 0,
                         )
+                        # CRITICAL FIX: For B cells with wmask=0 that form L-junctions (two straight edges meeting),
+                        # force use of the inset corner tile even if the function returned None or a different value.
+                        # This handles the case where E and S neighbors are B (straight edges) and this cell
+                        # should be the connecting inner corner.
+                        if special_inset_corner_tile is None and shore_ch == "B" and wmask == 0:
+                            has_n_b = _get_ascii_cell(x, y - 1) == "B"
+                            has_e_b = _get_ascii_cell(x + 1, y) == "B"
+                            has_s_b = _get_ascii_cell(x, y + 1) == "B"
+                            has_w_b = _get_ascii_cell(x - 1, y) == "B"
+                            # E and S neighbors are B (horizontal + vertical straight) -> top-right inner corner
+                            if not has_n_b and has_e_b and has_s_b and not has_w_b and shoreline_inset_direct_corner_tiles:
+                                special_inset_corner_tile = shoreline_inset_direct_corner_tiles.get("direct_top_right")
+                            # Other L-junction orientations
+                            elif not has_n_b and not has_e_b and has_s_b and has_w_b and shoreline_inset_direct_corner_tiles:
+                                special_inset_corner_tile = shoreline_inset_direct_corner_tiles.get("direct_top_left")
+                            elif has_n_b and has_e_b and not has_s_b and not has_w_b and shoreline_inset_direct_corner_tiles:
+                                special_inset_corner_tile = shoreline_inset_direct_corner_tiles.get("direct_bottom_right")
+                            elif has_n_b and not has_e_b and not has_s_b and has_w_b and shoreline_inset_direct_corner_tiles:
+                                special_inset_corner_tile = shoreline_inset_direct_corner_tiles.get("direct_bottom_left")
                     if (
                         special_inset_corner_tile is not None
                         and shoreline_sheet_path

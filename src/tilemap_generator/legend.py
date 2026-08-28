@@ -26,6 +26,8 @@ DEFAULT_LEGEND: dict[str, int] = {
     "C": 11,
     "D": 12,
     "N": 13,
+    "W": 119,  # Citadel wall segments
+    "O": 120,  # Citadel corner towers
 }
 
 

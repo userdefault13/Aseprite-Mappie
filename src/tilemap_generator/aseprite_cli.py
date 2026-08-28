@@ -391,12 +391,19 @@ def command_paint(args: argparse.Namespace) -> None:
                 if shoreline_path_resolved.suffix.lower() in (".aseprite", ".ase"):
                     shoreline_sheet_path = tmp_path / "shorelines_sheet.png"
                     # Use 5 columns to match common shoreline autotile layout (e.g. 5x7 = 35 tiles)
-                    export_treeset_to_png(
-                        shoreline_path_resolved,
-                        shoreline_sheet_path,
-                        aseprite_bin,
-                        sheet_columns=5,
-                    )
+                    try:
+                        export_treeset_to_png(
+                            shoreline_path_resolved,
+                            shoreline_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=5,
+                        )
+                    except (FileNotFoundError, RuntimeError):
+                        # Aseprite not available or export failed; try fallback .png
+                        shoreline_sheet_path = None
+                        png_fallback = shoreline_path_resolved.with_suffix(".png")
+                        if png_fallback.exists():
+                            shoreline_sheet_path = png_fallback
                 elif shoreline_path_resolved.suffix.lower() == ".png":
                     shoreline_sheet_path = shoreline_path_resolved
 
@@ -405,12 +412,19 @@ def command_paint(args: argparse.Namespace) -> None:
             if lakesrivers_path_resolved:
                 if lakesrivers_path_resolved.suffix.lower() in (".aseprite", ".ase"):
                     lakesrivers_sheet_path = tmp_path / "lakesrivers_sheet.png"
-                    export_treeset_to_png(
-                        lakesrivers_path_resolved,
-                        lakesrivers_sheet_path,
-                        aseprite_bin,
-                        sheet_columns=11,
-                    )
+                    try:
+                        export_treeset_to_png(
+                            lakesrivers_path_resolved,
+                            lakesrivers_sheet_path,
+                            aseprite_bin,
+                            sheet_columns=11,
+                        )
+                    except (FileNotFoundError, RuntimeError):
+                        # Aseprite not available or export failed; try fallback .png
+                        lakesrivers_sheet_path = None
+                        png_fallback = lakesrivers_path_resolved.with_suffix(".png")
+                        if png_fallback.exists():
+                            lakesrivers_sheet_path = png_fallback
                 elif lakesrivers_path_resolved.suffix.lower() == ".png":
                     lakesrivers_sheet_path = lakesrivers_path_resolved
 
@@ -618,6 +632,10 @@ def command_paint(args: argparse.Namespace) -> None:
             env["POI_CREEP_PNG"] = str(poi_layers_png["Creep"])
             env["POI_DEAD_END_PNG"] = str(poi_layers_png["DeadEnd"])
             env["POI_SECRET_PNG"] = str(poi_layers_png["Secret"])
+            if "CitadelWall" in poi_layers_png:
+                env["POI_CITADEL_WALL_PNG"] = str(poi_layers_png["CitadelWall"])
+            if "CitadelTower" in poi_layers_png:
+                env["POI_CITADEL_TOWER_PNG"] = str(poi_layers_png["CitadelTower"])
             paint_timeout = float(os.getenv("MAPPIE_ASEPRITE_PAINT_TIMEOUT", "0") or 0) or None
             try:
                 run([str(aseprite_bin), "-b", "--script", str(lua_script)], env=env, timeout=paint_timeout)

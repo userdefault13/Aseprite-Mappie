@@ -34,6 +34,8 @@ SHOP_CHAR = "H"
 CREEP_CHAR = "C"
 DEAD_END_CHAR = "D"
 SECRET_NPC_CHAR = "N"
+CITADEL_WALL_CHAR = "W"  # Citadel wall segments
+CITADEL_TOWER_CHAR = "O"  # Citadel corner towers (O for tower, T already used for Tree)
 
 Point = tuple[int, int]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +59,8 @@ PREVIEW_COLORS: dict[str, tuple[int, int, int]] = {
     CREEP_CHAR: (194, 76, 76),
     DEAD_END_CHAR: (240, 95, 95),
     SECRET_NPC_CHAR: (86, 208, 220),
+    CITADEL_WALL_CHAR: (120, 80, 180),  # Purple walls
+    CITADEL_TOWER_CHAR: (140, 100, 220),  # Lighter purple towers
 }
 
 
