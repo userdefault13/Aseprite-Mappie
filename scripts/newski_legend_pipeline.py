@@ -31,7 +31,7 @@ import numpy as np
 from PIL import Image
 
 REPO = Path("/Users/juliuswong/Dev/Aseprite-Mappie")
-NEWski_LAYERS = Path("/tmp/newski_layers")
+NEWski_LAYERS = REPO / "assets" / "newski" / "source"
 BUILD = REPO / "build"
 BUILD.mkdir(exist_ok=True)
 
