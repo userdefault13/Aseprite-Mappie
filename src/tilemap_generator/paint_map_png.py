@@ -1285,10 +1285,10 @@ def filter_isolated_lake_shoreline(
     ascii_lines: list[str],
     shore_char: str = "L",
     lake_chars: frozenset[str] | None = None,
-    min_lake_neighbors: int = 1,
+    min_lake_neighbors: int = 2,
 ) -> list[str]:
     """Demote L cells with fewer than min_lake_neighbors NESW lake neighbors to G.
-    Lake neighbors = water (~, `) or L. min=1 preserves single-edge shorelines (S, E, W banks)."""
+    Lake neighbors = water (~, `) or L. Helps avoid diagonal-looking lake outlines."""
     if lake_chars is None:
         lake_chars = WATER_CHARS | frozenset({shore_char})
     height = len(ascii_lines)
