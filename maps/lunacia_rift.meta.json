@@ -1,0 +1,28 @@
+{
+  "tile": 16,
+  "cols": 94,
+  "rows": 50,
+  "game_w": 1500,
+  "game_h": 800,
+  "lanes_y_px": [
+    130.0,
+    400.0,
+    670.0
+  ],
+  "lanes_row": [
+    8,
+    25,
+    42
+  ],
+  "gap_x_px": [
+    420.0,
+    750.0,
+    1080.0
+  ],
+  "gap_col": [
+    26,
+    47,
+    67
+  ],
+  "profile_id": "moba_3lane_lunacia"
+}

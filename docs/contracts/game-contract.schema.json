@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aseprite-mappie.local/schemas/game-contract.schema.json",
+  "title": "Mappie game contract (*.game.json)",
+  "description": "Playable contract a game loads for collision, lanes, and structures. Emitted alongside Tiled/PNG so games do not hardcode layout.",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "seed", "canvas", "lanes", "walkability", "structures"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "profile_id": { "type": "string" },
+    "seed": { "type": "integer" },
+    "generated_at": { "type": "string" },
+    "canvas": {
+      "type": "object",
+      "required": ["tile", "cols", "rows", "width_px", "height_px"],
+      "properties": {
+        "tile": { "type": "integer" },
+        "cols": { "type": "integer" },
+        "rows": { "type": "integer" },
+        "width_px": { "type": "integer" },
+        "height_px": { "type": "integer" }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "y_px", "row", "path_half_h_px"],
+        "properties": {
+          "id": { "type": "string" },
+          "y_px": { "type": "number" },
+          "row": { "type": "integer" },
+          "path_half_h_px": { "type": "number" }
+        }
+      }
+    },
+    "bases": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "x_px": { "type": "number" },
+          "sanctuary_r_px": { "type": "number" },
+          "side": { "type": "string" }
+        }
+      }
+    },
+    "forest": {
+      "type": "object",
+      "properties": {
+        "rects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["x", "y", "w", "h"],
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "w": { "type": "number" },
+              "h": { "type": "number" }
+            }
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["x_px", "half_width_px"],
+            "properties": {
+              "x_px": { "type": "number" },
+              "half_width_px": { "type": "number" },
+              "col": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "walkability": {
+      "type": "object",
+      "properties": {
+        "solid_layer": { "type": "string" },
+        "solid_gids": { "type": "array", "items": { "type": "integer" } },
+        "walkable_chars": { "type": "array", "items": { "type": "string" } },
+        "solid_chars": { "type": "array", "items": { "type": "string" } },
+        "collision_mask_url": { "type": "string", "description": "Optional 1-bit PNG or CSV of solid tiles" }
+      }
+    },
+    "structures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "team", "x", "y"],
+        "properties": {
+          "type": { "type": "string", "enum": ["nest", "spire", "den", "sanctuary", "shop", "mine", "spawn"] },
+          "team": { "type": "string", "enum": ["player", "enemy", "neutral"] },
+          "lane": { "type": ["string", "null"] },
+          "tier": { "type": ["integer", "null"] },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "char": { "type": "string" }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "tiled_json": { "type": "string" },
+        "ascii": { "type": "string" },
+        "legend": { "type": "string" },
+        "preview_png": { "type": "string" },
+        "meta_json": { "type": "string" }
+      }
+    }
+  }
+}

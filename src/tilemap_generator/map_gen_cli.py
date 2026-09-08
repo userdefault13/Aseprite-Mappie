@@ -67,25 +67,41 @@ def build_parser() -> argparse.ArgumentParser:
             "and gameplay POIs."
         )
     )
-    parser.add_argument("--width", type=int, required=True, help="Map width in tiles.")
-    parser.add_argument("--height", type=int, required=True, help="Map height in tiles.")
+    parser.add_argument(
+        "--profile",
+        default="",
+        help="Criteria profile JSON (profiles/*.json). Supplies canvas/layout/densities; "
+        "makes --width/--height/--*-density optional. Engines: moba_lanes, open_world.",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="Map width in tiles (required unless --profile supplies canvas.cols).",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="Map height in tiles (required unless --profile supplies canvas.rows).",
+    )
     parser.add_argument(
         "--tree-density",
         type=float,
-        required=True,
-        help="Fraction of map covered by vegetation (0.0 to 1.0).",
+        default=None,
+        help="Fraction of map covered by vegetation (0.0 to 1.0). Optional with --profile.",
     )
     parser.add_argument(
         "--forest-density",
         type=float,
-        required=True,
-        help="Fraction of vegetation that becomes forest clusters (0.0 to 1.0).",
+        default=None,
+        help="Fraction of vegetation that becomes forest clusters (0.0 to 1.0). Optional with --profile.",
     )
     parser.add_argument(
         "--water-density",
         type=float,
-        required=True,
-        help="Fraction of map covered by water (0.0 to 1.0).",
+        default=None,
+        help="Fraction of map covered by water (0.0 to 1.0). Optional with --profile.",
     )
     parser.add_argument(
         "--hill-density",
@@ -1957,6 +1973,34 @@ def write_legend(path: Path, legend: dict[str, int] | None = None) -> None:
 
 
 def run_from_args(args: argparse.Namespace) -> None:
+    profile_path = getattr(args, "profile", "") or ""
+    if isinstance(profile_path, str) and profile_path.strip():
+        from tilemap_generator.profiles import ProfileError, apply_profile_to_args, load_profile
+
+        try:
+            profile = load_profile(profile_path.strip())
+        except ProfileError as exc:
+            raise SystemExit(f"Profile error: {exc}") from exc
+        apply_profile_to_args(args, profile)
+        engine = (profile.get("layout") or {}).get("engine") or profile.get("genre")
+        if engine == "moba_lanes":
+            from tilemap_generator.profile_pipeline import run_moba_lanes_profile
+
+            run_moba_lanes_profile(args, profile)
+            return
+    else:
+        args.profile = None
+
+    # open_world / legacy: require canvas + densities
+    if args.width is None or args.height is None:
+        raise SystemExit("--width and --height are required unless --profile is set.")
+    if args.tree_density is None or args.forest_density is None or args.water_density is None:
+        raise SystemExit(
+            "--tree-density, --forest-density, and --water-density are required unless --profile is set."
+        )
+    if getattr(args, "hill_density", None) is None:
+        args.hill_density = 0.0
+
     if args.width <= 0 or args.height <= 0:
         raise ValueError("--width and --height must be positive integers.")
 

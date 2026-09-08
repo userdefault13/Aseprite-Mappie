@@ -1,0 +1,111 @@
+{
+  "$schema": "../docs/contracts/map-criteria.schema.json",
+  "id": "moba_3lane_lunacia",
+  "version": 1,
+  "genre": "moba_lanes",
+  "title": "Lunacia Rift — 1v1 three-lane micro-MOBA",
+  "description": "Horizontal 3-lane jungle map with forest bands, cross-lane gaps, Nest/Spire/Den POIs. Terms: Nest / Spire / Pack / Sanctuary / Den only.",
+  "canvas": {
+    "tile": 16,
+    "cols": 94,
+    "rows": 50,
+    "game_w": 1500,
+    "game_h": 800
+  },
+  "layout": {
+    "engine": "moba_lanes",
+    "axis": "horizontal",
+    "lane_count": 3,
+    "lane_ids": ["top", "mid", "bot"],
+    "lanes_y_px": [130, 400, 670],
+    "lanes_row": [8, 25, 42],
+    "path_band_px": 72,
+    "path_band_tiles": 5,
+    "bases": {
+      "player": { "side": "left", "x_px": 90, "sanctuary_r_px": 70 },
+      "enemy": { "side": "right", "x_px": 1410, "sanctuary_r_px": 70 }
+    },
+    "forest": {
+      "bands": "between_lanes",
+      "band_height_px": 110,
+      "x_margin_px": 180,
+      "gaps": {
+        "x_px": [420, 750, 1080],
+        "half_width_px": 50,
+        "cols": [26, 47, 67]
+      }
+    }
+  },
+  "pois": {
+    "legend": {
+      "N": "nest",
+      "S": "spire",
+      "D": "den"
+    },
+    "rules": [
+      {
+        "type": "nest",
+        "per_team": 1,
+        "placement": "base_center",
+        "lanes": null
+      },
+      {
+        "type": "spire",
+        "per_team_per_lane": 2,
+        "tiers": [1, 2],
+        "placement": "along_lane",
+        "player_x_px": [440, 250],
+        "enemy_x_px": [1060, 1250]
+      },
+      {
+        "type": "den",
+        "per_team_per_lane": 1,
+        "placement": "near_base_lane",
+        "player_x_px": 140,
+        "enemy_x_px": 1360
+      }
+    ]
+  },
+  "walkability": {
+    "walkable_chars": ["G", ".", "P", "D", "S", "N"],
+    "solid_chars": ["T", "F", "R"],
+    "path_char": "P",
+    "forest_chars": ["T", "F"]
+  },
+  "art": {
+    "biome": "lunacia_jungle",
+    "map_mode_hint": "continent",
+    "terrain_config": "examples/terrain.bitmask.json",
+    "tilesets": [
+      "examples/grass.aseprite",
+      "examples/dirt.aseprite",
+      "examples/trees.aseprite"
+    ],
+    "layers": ["Grass", "Paths", "Forest", "POI"],
+    "water_density": 0.0,
+    "tree_density": 0.28,
+    "forest_density": 0.7,
+    "hill_density": 0.0
+  },
+  "outputs": {
+    "ascii": true,
+    "legend": true,
+    "tiled_json": true,
+    "csv": true,
+    "preview_png": true,
+    "game_json": true,
+    "meta_json": true
+  },
+  "validation": {
+    "require_continuous_lanes": true,
+    "require_gap_connectivity": true,
+    "require_pois": ["nest", "spire", "den"],
+    "forbid_solid_in_path_band": true,
+    "pixel_size_must_match_canvas": true,
+    "tolerances": {
+      "lane_y_px": 8,
+      "gap_x_px": 16
+    }
+  },
+  "seed_default": 77
+}

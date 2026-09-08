@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aseprite-mappie.local/schemas/map-criteria.schema.json",
+  "title": "Mappie map criteria profile",
+  "type": "object",
+  "required": ["id", "version", "genre", "canvas", "layout", "walkability", "outputs"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "genre": {
+      "type": "string",
+      "enum": ["moba_lanes", "open_world", "arena"]
+    },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "canvas": {
+      "type": "object",
+      "required": ["tile", "cols", "rows"],
+      "properties": {
+        "tile": { "type": "integer", "minimum": 8 },
+        "cols": { "type": "integer", "minimum": 8 },
+        "rows": { "type": "integer", "minimum": 8 },
+        "game_w": { "type": "integer" },
+        "game_h": { "type": "integer" }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "required": ["engine"],
+      "properties": {
+        "engine": {
+          "type": "string",
+          "enum": ["moba_lanes", "open_world", "arena"]
+        },
+        "axis": { "type": "string", "enum": ["horizontal", "vertical"] },
+        "lane_count": { "type": "integer", "minimum": 1 },
+        "lane_ids": { "type": "array", "items": { "type": "string" } },
+        "lanes_y_px": { "type": "array", "items": { "type": "number" } },
+        "lanes_row": { "type": "array", "items": { "type": "integer" } },
+        "path_band_px": { "type": "number" },
+        "path_band_tiles": { "type": "integer" },
+        "bases": { "type": "object" },
+        "forest": { "type": "object" },
+        "spawn_count": { "type": "integer" },
+        "path_graph": { "type": "object" }
+      }
+    },
+    "pois": { "type": "object" },
+    "walkability": {
+      "type": "object",
+      "required": ["walkable_chars", "solid_chars"],
+      "properties": {
+        "walkable_chars": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 1 } },
+        "solid_chars": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 1 } },
+        "path_char": { "type": "string", "maxLength": 1 },
+        "forest_chars": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "art": { "type": "object" },
+    "outputs": {
+      "type": "object",
+      "properties": {
+        "ascii": { "type": "boolean" },
+        "legend": { "type": "boolean" },
+        "tiled_json": { "type": "boolean" },
+        "csv": { "type": "boolean" },
+        "preview_png": { "type": "boolean" },
+        "game_json": { "type": "boolean" },
+        "meta_json": { "type": "boolean" }
+      }
+    },
+    "validation": { "type": "object" },
+    "seed_default": { "type": "integer" }
+  }
+}

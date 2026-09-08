@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "profile_id": "moba_3lane_lunacia",
+  "seed": 77,
+  "generated_at": "2026-09-08T00:00:00Z",
+  "note": "Reference contract mirroring current Lunacia Rift hardcodes in game.js. Mappie should emit this automatically from the profile.",
+  "canvas": {
+    "tile": 16,
+    "cols": 94,
+    "rows": 50,
+    "width_px": 1504,
+    "height_px": 800
+  },
+  "lanes": [
+    {
+      "id": "top",
+      "y_px": 130,
+      "row": 8,
+      "path_half_h_px": 36
+    },
+    {
+      "id": "mid",
+      "y_px": 400,
+      "row": 25,
+      "path_half_h_px": 36
+    },
+    {
+      "id": "bot",
+      "y_px": 670,
+      "row": 42,
+      "path_half_h_px": 36
+    }
+  ],
+  "bases": {
+    "player": {
+      "side": "left",
+      "x_px": 90,
+      "sanctuary_r_px": 70
+    },
+    "enemy": {
+      "side": "right",
+      "x_px": 1410,
+      "sanctuary_r_px": 70
+    }
+  },
+  "forest": {
+    "rects": [
+      {
+        "x": 180,
+        "y": 210.0,
+        "w": 190,
+        "h": 110
+      },
+      {
+        "x": 470,
+        "y": 210.0,
+        "w": 230,
+        "h": 110
+      },
+      {
+        "x": 800,
+        "y": 210.0,
+        "w": 230,
+        "h": 110
+      },
+      {
+        "x": 1130,
+        "y": 210.0,
+        "w": 190,
+        "h": 110
+      },
+      {
+        "x": 180,
+        "y": 480.0,
+        "w": 190,
+        "h": 110
+      },
+      {
+        "x": 470,
+        "y": 480.0,
+        "w": 230,
+        "h": 110
+      },
+      {
+        "x": 800,
+        "y": 480.0,
+        "w": 230,
+        "h": 110
+      },
+      {
+        "x": 1130,
+        "y": 480.0,
+        "w": 190,
+        "h": 110
+      }
+    ],
+    "gaps": [
+      {
+        "x_px": 420,
+        "half_width_px": 50,
+        "col": 26
+      },
+      {
+        "x_px": 750,
+        "half_width_px": 50,
+        "col": 47
+      },
+      {
+        "x_px": 1080,
+        "half_width_px": 50,
+        "col": 67
+      }
+    ]
+  },
+  "walkability": {
+    "solid_layer": "Forest",
+    "walkable_chars": [
+      "G",
+      ".",
+      "P",
+      "D",
+      "S",
+      "N"
+    ],
+    "solid_chars": [
+      "T",
+      "F",
+      "R"
+    ]
+  },
+  "structures": [
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "top",
+      "tier": null,
+      "x": 140,
+      "y": 130,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "top",
+      "tier": 1,
+      "x": 440,
+      "y": 130,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "top",
+      "tier": 2,
+      "x": 250,
+      "y": 130,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "top",
+      "tier": null,
+      "x": 1360,
+      "y": 130,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "top",
+      "tier": 1,
+      "x": 1060,
+      "y": 130,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "top",
+      "tier": 2,
+      "x": 1250,
+      "y": 130,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "mid",
+      "tier": null,
+      "x": 140,
+      "y": 400,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "mid",
+      "tier": 1,
+      "x": 440,
+      "y": 400,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "mid",
+      "tier": 2,
+      "x": 250,
+      "y": 400,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": null,
+      "x": 1360,
+      "y": 400,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": 1,
+      "x": 1060,
+      "y": 400,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": 2,
+      "x": 1250,
+      "y": 400,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "bot",
+      "tier": null,
+      "x": 140,
+      "y": 670,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "bot",
+      "tier": 1,
+      "x": 440,
+      "y": 670,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "bot",
+      "tier": 2,
+      "x": 250,
+      "y": 670,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": null,
+      "x": 1360,
+      "y": 670,
+      "char": "D"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": 1,
+      "x": 1060,
+      "y": 670,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": 2,
+      "x": 1250,
+      "y": 670,
+      "char": "S"
+    },
+    {
+      "type": "nest",
+      "team": "player",
+      "lane": null,
+      "tier": null,
+      "x": 90,
+      "y": 400,
+      "char": "N"
+    },
+    {
+      "type": "nest",
+      "team": "enemy",
+      "lane": null,
+      "tier": null,
+      "x": 1410,
+      "y": 400,
+      "char": "N"
+    }
+  ],
+  "artifacts": {
+    "tiled_json": "lunacia_rift.tiled.json",
+    "ascii": "lunacia_rift.txt",
+    "legend": "lunacia_rift.legend.json",
+    "preview_png": "lunacia_rift_mappie_preview.png",
+    "meta_json": "lunacia_rift.meta.json"
+  }
+}

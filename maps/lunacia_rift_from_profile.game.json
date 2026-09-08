@@ -1,0 +1,319 @@
+{
+  "schema_version": 1,
+  "profile_id": "moba_3lane_lunacia",
+  "seed": 77,
+  "generated_at": "2026-09-08T18:14:49Z",
+  "canvas": {
+    "tile": 16,
+    "cols": 94,
+    "rows": 50,
+    "width_px": 1504,
+    "height_px": 800
+  },
+  "lanes": [
+    {
+      "id": "top",
+      "y_px": 130.0,
+      "row": 8,
+      "path_half_h_px": 36.0
+    },
+    {
+      "id": "mid",
+      "y_px": 400.0,
+      "row": 25,
+      "path_half_h_px": 36.0
+    },
+    {
+      "id": "bot",
+      "y_px": 670.0,
+      "row": 42,
+      "path_half_h_px": 36.0
+    }
+  ],
+  "bases": {
+    "player": {
+      "side": "left",
+      "x_px": 90,
+      "sanctuary_r_px": 70
+    },
+    "enemy": {
+      "side": "right",
+      "x_px": 1410,
+      "sanctuary_r_px": 70
+    }
+  },
+  "forest": {
+    "rects": [
+      {
+        "x": 180.0,
+        "y": 210.0,
+        "w": 190.0,
+        "h": 110.0
+      },
+      {
+        "x": 470.0,
+        "y": 210.0,
+        "w": 230.0,
+        "h": 110.0
+      },
+      {
+        "x": 800.0,
+        "y": 210.0,
+        "w": 230.0,
+        "h": 110.0
+      },
+      {
+        "x": 1130.0,
+        "y": 210.0,
+        "w": 194.0,
+        "h": 110.0
+      },
+      {
+        "x": 180.0,
+        "y": 480.0,
+        "w": 190.0,
+        "h": 110.0
+      },
+      {
+        "x": 470.0,
+        "y": 480.0,
+        "w": 230.0,
+        "h": 110.0
+      },
+      {
+        "x": 800.0,
+        "y": 480.0,
+        "w": 230.0,
+        "h": 110.0
+      },
+      {
+        "x": 1130.0,
+        "y": 480.0,
+        "w": 194.0,
+        "h": 110.0
+      }
+    ],
+    "gaps": [
+      {
+        "x_px": 420.0,
+        "half_width_px": 50.0,
+        "col": 26
+      },
+      {
+        "x_px": 750.0,
+        "half_width_px": 50.0,
+        "col": 47
+      },
+      {
+        "x_px": 1080.0,
+        "half_width_px": 50.0,
+        "col": 67
+      }
+    ]
+  },
+  "walkability": {
+    "solid_layer": "Forest",
+    "walkable_chars": [
+      "G",
+      ".",
+      "P",
+      "D",
+      "S",
+      "N"
+    ],
+    "solid_chars": [
+      "T",
+      "F",
+      "R"
+    ]
+  },
+  "structures": [
+    {
+      "type": "nest",
+      "team": "player",
+      "lane": null,
+      "tier": null,
+      "x": 90.0,
+      "y": 400.0,
+      "char": "N"
+    },
+    {
+      "type": "nest",
+      "team": "enemy",
+      "lane": null,
+      "tier": null,
+      "x": 1410.0,
+      "y": 400.0,
+      "char": "N"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "top",
+      "tier": 1,
+      "x": 440.0,
+      "y": 130.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "top",
+      "tier": 2,
+      "x": 250.0,
+      "y": 130.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "top",
+      "tier": 1,
+      "x": 1060.0,
+      "y": 130.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "top",
+      "tier": 2,
+      "x": 1250.0,
+      "y": 130.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "mid",
+      "tier": 1,
+      "x": 440.0,
+      "y": 400.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "mid",
+      "tier": 2,
+      "x": 250.0,
+      "y": 400.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": 1,
+      "x": 1060.0,
+      "y": 400.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": 2,
+      "x": 1250.0,
+      "y": 400.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "bot",
+      "tier": 1,
+      "x": 440.0,
+      "y": 670.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "player",
+      "lane": "bot",
+      "tier": 2,
+      "x": 250.0,
+      "y": 670.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": 1,
+      "x": 1060.0,
+      "y": 670.0,
+      "char": "S"
+    },
+    {
+      "type": "spire",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": 2,
+      "x": 1250.0,
+      "y": 670.0,
+      "char": "S"
+    },
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "top",
+      "tier": null,
+      "x": 140.0,
+      "y": 130.0,
+      "char": "D"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "top",
+      "tier": null,
+      "x": 1360.0,
+      "y": 130.0,
+      "char": "D"
+    },
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "mid",
+      "tier": null,
+      "x": 140.0,
+      "y": 400.0,
+      "char": "D"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "mid",
+      "tier": null,
+      "x": 1360.0,
+      "y": 400.0,
+      "char": "D"
+    },
+    {
+      "type": "den",
+      "team": "player",
+      "lane": "bot",
+      "tier": null,
+      "x": 140.0,
+      "y": 670.0,
+      "char": "D"
+    },
+    {
+      "type": "den",
+      "team": "enemy",
+      "lane": "bot",
+      "tier": null,
+      "x": 1360.0,
+      "y": 670.0,
+      "char": "D"
+    }
+  ],
+  "artifacts": {
+    "tiled_json": "lunacia_rift_from_profile.tiled.json",
+    "ascii": "lunacia_rift_from_profile.txt",
+    "legend": "lunacia_rift_from_profile.legend.json",
+    "preview_png": "lunacia_rift_from_profile.preview.png",
+    "meta_json": "lunacia_rift_from_profile.meta.json"
+  }
+}
