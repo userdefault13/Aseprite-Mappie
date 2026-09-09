@@ -6,6 +6,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Any
 
+from tilemap_generator.forest_edge import roughen_forest_edges
+
 GRASS = "G"
 PATH = "P"
 TREE = "T"
@@ -250,6 +252,56 @@ def generate_moba_lanes_map(profile: dict[str, Any], seed: int) -> MobaLanesResu
             for c in range(max(0, gc - half_cols), min(cols, gc + half_cols + 1)):
                 if grid[r][c] in (TREE, FOREST, *forest_chars):
                     grid[r][c] = GRASS
+
+    # 3b) Roughen forest edges inside collision rects (keep gaps + lanes clear)
+    art_edge = art if isinstance(art, dict) else {}
+    edge_iters = int(
+        art_edge.get(
+            "forest_edge_iterations",
+            (forest_cfg.get("edge_iterations") if isinstance(forest_cfg, dict) else None) or 2,
+        )
+    )
+    if edge_iters > 0 and forest_rects:
+        gap_blocked: set[tuple[int, int]] = set()
+        for gc in gap_cols:
+            for r in range(rows):
+                for c in range(max(0, gc - half_cols), min(cols, gc + half_cols + 1)):
+                    gap_blocked.add((c, r))
+        eligible: set[tuple[int, int]] = set()
+        for rect in forest_rects:
+            c0 = max(0, int(rect["x"] // tile))
+            c1 = min(cols, int(math.ceil((rect["x"] + rect["w"]) / tile)))
+            r0 = max(0, int(rect["y"] // tile))
+            r1 = min(rows, int(math.ceil((rect["y"] + rect["h"]) / tile)))
+            for r in range(r0, r1):
+                if r in path_rows:
+                    continue
+                for c in range(c0, c1):
+                    if (c, r) in gap_blocked:
+                        continue
+                    eligible.add((c, r))
+        roughen_forest_edges(
+            grid,
+            iterations=edge_iters,
+            seed=seed + 777,
+            # Softer than open-world: keep fill high inside collision AABBs
+            erode_p=float(art_edge.get("forest_edge_erode", 0.35)),
+            grow_p=float(art_edge.get("forest_edge_grow", 0.5)),
+            forest_chars={TREE, FOREST},
+            grow_onto={GRASS},
+            protected_chars={PATH, NEST, SPIRE, DEN},
+            eligible=eligible,
+            default_forest_char=FOREST,
+            grass_char=GRASS,
+        )
+        # Re-assert gap corridors stay walkable
+        for gc in gap_cols:
+            for r in range(rows):
+                if r in path_rows:
+                    continue
+                for c in range(max(0, gc - half_cols), min(cols, gc + half_cols + 1)):
+                    if grid[r][c] in (TREE, FOREST):
+                        grid[r][c] = GRASS
 
     # 4) POIs
     bases = dict(layout.get("bases") or {})

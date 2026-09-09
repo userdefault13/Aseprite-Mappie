@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from tilemap_generator.hill_topology import apply_grass_hill_cliffline_repair
+from tilemap_generator.forest_edge import roughen_forest_edges
 
 
 GRASS_CHAR = "G"
@@ -206,6 +207,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=2,
         help="Cellular automata iterations to erode water/land boundary (0=off, 2=default). Reduces straight coastlines.",
+    )
+    parser.add_argument(
+        "--forest-edge-iterations",
+        type=int,
+        default=3,
+        help="Roughen forest/tree cluster edges (0=off, 3=default). Reduces boxy forest blobs.",
+    )
+    parser.add_argument(
+        "--forest-edge-erode",
+        type=float,
+        default=0.55,
+        help="Probability of eroding a sparse forest edge cell per iteration (0-1).",
+    )
+    parser.add_argument(
+        "--forest-edge-grow",
+        type=float,
+        default=0.35,
+        help="Probability of growing forest into adjacent grass per iteration (0-1).",
     )
     parser.add_argument(
         "--shoreline-expand-depth",
@@ -2606,6 +2625,45 @@ def run_from_args(args: argparse.Namespace) -> None:
     for x, y in tree_candidates[:tree_target]:
         grid[y][x] = TREE_CHAR
         tree_placed += 1
+
+    forest_edge_iters = int(getattr(args, "forest_edge_iterations", 3) or 0)
+    if forest_edge_iters > 0:
+        forest_edge_stats = roughen_forest_edges(
+            grid,
+            iterations=forest_edge_iters,
+            seed=int(args.seed) + 777,
+            erode_p=float(getattr(args, "forest_edge_erode", 0.55)),
+            grow_p=float(getattr(args, "forest_edge_grow", 0.35)),
+            forest_chars={TREE_CHAR, FOREST_CHAR},
+            grow_onto={GRASS_CHAR, "."},
+            protected_chars={
+                SHORELINE_CHAR,
+                LAKE_SHORELINE_CHAR,
+                RIVER_CHAR,
+                HILL_CHAR,
+                PATH_CHAR,
+                WATER_CHAR,
+                DEEP_WATER_CHAR,
+                SPAWN_CHAR,
+                JOIN_CHAR,
+                MINE_CHAR,
+                SHOP_CHAR,
+                CREEP_CHAR,
+                DEAD_END_CHAR,
+                SECRET_NPC_CHAR,
+            },
+            default_forest_char=FOREST_CHAR,
+            grass_char=GRASS_CHAR,
+        )
+        # Keep spawn clearings / shore buffers tree-free
+        for bx, by in vegetation_blocked:
+            if grid[by][bx] in (TREE_CHAR, FOREST_CHAR):
+                grid[by][bx] = GRASS_CHAR
+        print(
+            f"forest_edge: eroded={forest_edge_stats['eroded']} "
+            f"grown={forest_edge_stats['grown']} nibbled={forest_edge_stats['nibbled']} "
+            f"iters={forest_edge_iters}"
+        )
 
     creep_centers, creep_cells = place_creep_zones(
         grid=grid,

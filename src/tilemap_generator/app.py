@@ -318,6 +318,7 @@ def _run_map_gen_defaults() -> None:
         "--dead-end-count", "8",
         "--map-mode", "island",
         "--shoreline-erode-iterations", "2",
+        "--forest-edge-iterations", "3",
         "--seed", "0",
         "--out", "maps/generated_map.txt",
         "--terrain-config", "examples/terrain.bitmask.json",
@@ -388,6 +389,7 @@ def run_prompted_map_gen() -> None:
         map_mode = "island"
     water_border_width = 2 if map_mode == "island" else 0
     shoreline_erode = prompt_int("Shoreline erosion iterations (0=off, 2=default, more=rougher coastlines)", 2, "0-6")
+    forest_edge = prompt_int("Forest edge noise iterations (0=off, 3=default, more=rougher forests)", 3, "0-8")
     seed = prompt_int("Seed", r.randint(0, 99999), "0 = random")
     out = prompt_str("Output ASCII map path", "maps/generated_map.txt")
     terrain_config = input("Terrain config (legend + paths: grass, shoreline, hills, rivers, lakes) [examples/terrain.bitmask.json or blank]: ").strip()
@@ -435,6 +437,8 @@ def run_prompted_map_gen() -> None:
         map_mode,
         "--shoreline-erode-iterations",
         str(shoreline_erode),
+        "--forest-edge-iterations",
+        str(forest_edge),
         "--seed",
         str(seed),
         "--out",
